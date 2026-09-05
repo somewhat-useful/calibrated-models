@@ -1,0 +1,227 @@
+# install copies this to settings.toml on a machine that has none yet. That copy is
+# yours: it names the models you downloaded and what this machine may spend on them,
+# and it is not in the repository.
+#
+# Nothing here says where llama.cpp is. The releases are unpacked into .llamacpp beside
+# this file, and that is the whole of it: the directory the scripts were copied into is
+# the working directory.
+#
+# Everything below is either a place on this machine or a judgement about the work.
+# Nothing here is a placement: ctx-size, cache-type-k, cache-type-v, gpu-layers,
+# n-cpu-moe, the spec-* keys, threads and cache-ram are worked out against this card and
+# written into the preset. Writing one into a model's settings is refused rather than
+# obeyed -- a placement silently overridden is the failure this program exists to
+# prevent.
+
+# Where the models are: the directory the files below sit under. Left commented out,
+# the machine's LM Studio library is used instead -- LM Studio records the folder it
+# downloads into, and that is where these files land anyway. Where LM Studio is not
+# installed there is nothing to fall back on, and this has to be uncommented.
+# model_root = 'C:\models'
+
+# Which CUDA build of a release to install. The project publishes one archive per CUDA
+# version -- llama-b10448-bin-win-cuda-13.3-x64.zip -- and install picks between them by
+# this, so it has to be one the project still builds and one this machine's driver
+# supports. In quotes: unquoted it is a number, and 13.30 is the same number as 13.3 and
+# a different archive.
+# cuda_version = '13.3'
+
+# How many unpacked releases to keep when install unpacks a newer one. Two leaves the
+# one that was running to fall back to; the rest are removed, at some 670 MB each. A
+# release a server is running from is kept whatever this says.
+# keep_releases = 2
+
+# The file calibrate writes and the router reads, beside this one.
+preset_path = 'llamacpp.models.ini'
+
+# How the router listens and what it holds. All four have defaults, and the defaults are
+# below: every address, because the machine with the card exists to be called from other
+# machines; one model resident, because a second is video memory taken from the window
+# of the first; a quarter of an hour idle, because a model reloads in seconds and the
+# card is wanted by whatever else the machine does.
+# listen_host        = '0.0.0.0'
+# port               = 18081
+# models_max         = 1
+# sleep_idle_seconds = 900
+
+# Where the router writes its log, its two standard streams and its process id.
+# Relative to this file. Left commented out it is the logs directory beside it, which is
+# already excluded from the repository.
+# log_dir = 'logs'
+
+# How much system memory the router may hold processed prefixes in. Leave it out and it
+# is worked out: what the machine has, less the weights the heaviest profile keeps off
+# the card, less a share for the system. Write it down where this machine does something
+# else besides serving models.
+#   32   32G   32Gb   32GiB   a size in gibibytes
+#   50%                       a share of the memory installed
+# cache_ram = '50%'
+
+# Video memory in MiB to leave for everything that is not a model. A target to land near,
+# not a threshold to clear: one step of the mixture-of-experts lever is some 400 MiB, so
+# a placement lands where the lever allows rather than on the line. Landing a little
+# under is no worse than landing a little over.
+reserve_mib = 1024
+
+# Shortest window worth writing out, in tokens. Below some such length a profile stops
+# being useful, but where exactly is a judgement about the work rather than a fact about
+# the card, so it is set here. A model whose longest fitting window is shorter than this
+# is skipped rather than written out with a window nobody would use; a model trained for
+# less than this is bounded by what it was trained for instead.
+min_ctx_tokens = 25000
+
+# Window past which a coarser attention cache stops being worth its precision, in
+# tokens. A coarser cache is precision given up to buy window, so it earns a profile of
+# its own only where the precise one leaves the window short. Once the window is this
+# long there is nothing left to buy, and a second profile at the same length holding the
+# conversation less exactly is not a choice worth offering.
+ample_ctx_tokens = 100000
+
+
+# --------------------------------------------------------------------------- shared
+#
+# Flags every model runs with. A model with no entry of its own runs on these alone,
+# which is why ctx-size, cache-type-* and fit appear here: they are the defaults for an
+# unprofiled file, not a placement.
+
+[shared]
+
+# Single card, no splitting.
+main-gpu   = 0
+split-mode = 'none'
+
+# batch-size is how many prompt tokens enter one processing step; ubatch-size is the
+# chunk handed to the GPU. Raising either raises prefill throughput and enlarges the
+# compute buffers, which come out of the same video memory the weights need.
+batch-size  = 2048
+ubatch-size = 512
+
+# One slot: the whole window and prompt cache serve a single conversation.
+parallel = 1
+
+# An eight-bit attention cache halves what history costs in video memory against sixteen.
+# Use q4_0 or q8_0 only, and keep K equal to V: the released CUDA builds carry
+# flash-attention kernels for F16/F16, Q4_0/Q4_0, Q8_0/Q8_0 and BF16/BF16 only. Any other
+# pair falls back to materialising the attention matrix, which is many times slower with
+# nothing logged.
+cache-type-k = 'q8_0'
+cache-type-v = 'q8_0'
+flash-attn   = 'on'
+kv-offload   = true
+
+# Keep the processed prefix of a conversation so a follow-up re-reads only what changed.
+# In an agent loop, where every turn resends the whole history, this is the difference
+# between prefilling once and prefilling every turn.
+cache-prompt    = true
+ctx-checkpoints = 16
+
+# Speculative decoding with no draft model: the next few tokens are guessed from n-grams
+# already in the context and verified in one pass against the full model, so accepted or
+# rejected the output is the same. A model whose own profile names spec-type overrides
+# this.
+spec-type = 'ngram-mod'
+
+# Defaults for a model that has no entry below: it runs on the shared flags alone, which
+# is safe but untuned.
+ctx-size = 32768
+fit      = 'on'
+
+# Chat template comes from the model's own file. mmproj files sit beside the weights and
+# are not loaded: nothing here serves images.
+jinja     = true
+no-mmproj = true
+
+# Weights are locked in memory rather than left to be paged out, and the router reports
+# metrics. reasoning = auto lets the template decide unless a model overrides it.
+load-mode = 'mlock'
+metrics   = true
+reasoning = 'auto'
+
+
+# --------------------------------------------------------------------------- models
+#
+# One entry per model, and scan writes them. It walks the library, works out what each
+# file is called from where it sits, and appends an entry here for every model that has
+# none yet. Nothing already written is touched, so whatever you change below stays
+# changed, and no model appears without your having asked for it:
+#
+#   python -m cm.scan
+#
+# There is nothing to fill in by hand. An LM Studio library lays a model out as
+# publisher\repository\file.gguf, which says everything an entry needs: `file` is that
+# place, and the key is built from it -- the model, the quantisation of its weights, and
+# the variant the repository directory carries where the file name drops it. So two
+# quantisations of one model are two names rather than one name and a coin toss.
+#
+# The key is what you will ask the router for. Rename it if you would rather type
+# something else: an entry belongs to its `file`, not to its key, and scan will not
+# write a second one for a file that already has one.
+#
+# Files that only sit beside a model are left alone -- mmproj-*.gguf is a vision
+# projector, unused here and about a gibibyte of video memory to pair, and mtp-*.gguf is
+# a prediction head, which is read out of the model's own file instead.
+#
+# An entry arrives with a settings block already in it, and scan keeps it up to date.
+# The sampler values come from recommended.toml in the repository, which is where what a
+# model is published to run with is kept: the numbers belong to the model rather than to
+# this machine, so a correction is made once and reaches every machine that pulls it.
+# Vendors usually publish two sets, one in the chat quickstart and one in the agentic and
+# code benchmarks they report; the second is the one taken there.
+#
+# Three things can happen to an entry, and the entry decides which:
+#
+#   no entry for a file    one is added, with what the repository recommends
+#   an entry               its settings block is brought up to date
+#   an entry with manual   nothing at all
+#
+# So change any value you like. It stays changed until the next scan; mark the entry
+# manual = true and it stays changed for good. A model nothing in the repository covers
+# keeps whatever it has, and a new entry for one starts on neutral values rather than on
+# anybody's recommendation.
+#
+# Deleting the block does not leave a model neutral. It leaves it on llama.cpp's own
+# defaults -- temp 0.8, top-k 40, min-p 0.05 -- which are nobody's recommendation for
+# these models and appear nowhere in this file to be disagreed with.
+#
+# The rest scan cannot know, because nothing about a file says it. Every key is
+# optional, and a model with none of them runs on its settings and the shared flags:
+#
+#   cache = ['q8_0']   which attention-cache precisions to offer. Default: both.
+#   mtp   = false      whether to offer a prediction-head profile. Default: true,
+#                      which still yields none where the file carries no head.
+#
+#                      Neither is visible to the estimator or to any memory figure -- a
+#                      coarser cache can cost quality on one model and cost nothing on
+#                      another, and a prediction head can accept so little of what it
+#                      drafts that verifying it is a loss. They are judgements about the
+#                      answers rather than about the card, they are made here or not at
+#                      all, and they only ever narrow: neither adds what a quantisation
+#                      already dropped.
+#
+#   hidden = true      set this model aside without deleting it. Nothing is placed or
+#                      served for it, and scan still counts its file as named. That is
+#                      the point: deleting an entry leaves its file unnamed, and the
+#                      next scan writes it back.
+#
+#   manual = true      these settings are yours. scan brings an entry's sampler values
+#                      up to date with recommended.toml every time it runs; one marked
+#                      this way it does not touch, however far the two have drifted.
+#                      Change a value without this and it stays changed only until the
+#                      next run.
+#
+# What scan writes looks like this, and all of it is yours to edit:
+#
+#   [models.'qwen3.8-27b-ud-iq4xs']
+#   file = 'unsloth\Qwen3.8-27B-GGUF\Qwen3.8-27B-UD-IQ4_XS.gguf'
+#
+#   [models.'qwen3.8-27b-ud-iq4xs'.settings]
+#   # qwen3.8-27b, over neutral defaults for whatever it leaves open:
+#   # https://huggingface.co/Qwen/Qwen3.8-27B
+#   # Change any of it here; manual = true above keeps scan out of this block for good.
+#   min-p              = '0'
+#   temp               = '1.0'
+#   top-k              = '20'
+#
+# Everything between that block's header and whatever follows it belongs to scan and is
+# rewritten, the comment included. A note of your own goes above the header, where it
+# survives.

@@ -1,0 +1,95 @@
+# What a model is recommended to be run with for agentic and code work. This file is in
+# the repository on purpose: the numbers are a property of the model, not of a machine,
+# so a correction made here reaches every machine that pulls it. scan writes them into a
+# settings file, and anything written there by hand wins.
+#
+# A vendor usually publishes two sets: one for general or chat use, and one the agentic
+# and code benchmarks they report were run at. The second is the one taken here, even
+# where it is the louder of the two -- these models are run by an agent, not typed at.
+#
+# A row holds only what its page states. What the page leaves open is filled in from the
+# neutral floor in config.py rather than from llama.cpp's own defaults, which nobody
+# chose: min-p 0.05, top-k 40 and temp 0.8 are not silence, they are somebody else's
+# answer. So every row can be read against the page it names, line for line.
+#
+# A row is looked up by a model's stem -- the file name with the quantisation left off,
+# lowercased, taking the repository directory's word where that says more:
+#
+#   unsloth\Qwen3.8-27B-GGUF\Qwen3.8-27B-UD-IQ4_XS.gguf         -> qwen3.8-27b
+#   lmstudio-community\Qwen3.8-27B-GGUF\Qwen3.8-27B-Q4_K_M.gguf -> qwen3.8-27b
+#
+# so two quantisations of one model, and two publishers' repackagings of it, are one
+# row. A pattern may hold a `*`, and the longest pattern that matches wins: a release
+# that turns out to want something else takes a row of its own without its family being
+# split. Two matching patterns of the same length are refused rather than ranked.
+#
+# Values are quoted, all of them: unquoted 1.0 is a number, and a number read back is 1.
+#
+# Placements are not settings. ctx-size, the cache types, gpu-layers, n-cpu-moe and the
+# spec-* keys are worked out against a card by calibrate, and one written here is
+# refused rather than obeyed.
+
+
+# Mixture of experts. The assistant turn opens with a <think> block, which is what
+# reasoning-format deepseek moves into message.reasoning_content instead of leaving in
+# the content. Temperature is what the agentic harnesses were run at -- SWE-Bench under
+# OpenHands and SWE Atlas under mini SWE agent, both at top_p 0.95. The page recommends
+# 0.6 for general use, which is not this.
+[recommended.'ornith-1.0-35b']
+source = 'https://huggingface.co/deepreinforce-ai/Ornith-1.0-35B'
+
+[recommended.'ornith-1.0-35b'.settings]
+reasoning        = 'on'
+reasoning-format = 'deepseek'
+temp             = '1.0'
+top-p            = '0.95'
+
+
+# Mixture of experts, and a <think> block as above. The page gives 0.6 for general tasks
+# and says the reported benchmarks -- SWE-bench Verified, Terminal-Bench 2.1, MCP-Atlas
+# -- were run at 1.0. Only the temperature differs between the two; top_p and top_k are
+# the same either way.
+[recommended.'ornith-1.5-35b-a3b']
+source = 'https://huggingface.co/ornith-ai/Ornith-1.5-35B-A3B'
+
+[recommended.'ornith-1.5-35b-a3b'.settings]
+reasoning        = 'on'
+reasoning-format = 'deepseek'
+temp             = '1.0'
+top-k            = '20'
+top-p            = '0.95'
+
+
+# The whole Gemma 4 family, dense and mixture of experts alike. One row because the
+# pages say the same thing in the same words -- "use the following standardized sampling
+# configuration across all use cases" -- and name no separate set for agentic work. The
+# 26B-A4B page repeats the line below verbatim. Thinking, where a variant has it, is
+# delimited by the template's own channels rather than by <think>, so no reasoning-format
+# is named and the shared block's reasoning = auto decides.
+[recommended.'gemma-4-*']
+source = 'https://huggingface.co/google/gemma-4-12b-it'
+
+[recommended.'gemma-4-*'.settings]
+temp  = '1.0'
+top-k = '64'
+top-p = '0.95'
+
+
+# Dense. Thinking is on by default and is the set below; the page gives a second set for
+# running it without. reasoning-effort is the page's own default, and preserved thinking
+# is on by default there too, which it calls especially beneficial for agent scenarios.
+# Both publishers' repackagings share this stem, so this one row covers them.
+[recommended.'qwen3.8-27b']
+source = 'https://huggingface.co/Qwen/Qwen3.8-27B'
+
+[recommended.'qwen3.8-27b'.settings]
+min-p              = '0'
+presence-penalty   = '0'
+reasoning          = 'on'
+reasoning-effort   = 'xhigh'
+reasoning-format   = 'deepseek'
+reasoning-preserve = 'true'
+repeat-penalty     = '1.0'
+temp               = '1.0'
+top-k              = '20'
+top-p              = '0.95'

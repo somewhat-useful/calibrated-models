@@ -1,0 +1,7 @@
+# The repository keeps one line ending, LF, whatever the working tree it was committed
+# from used. Without this, a checkout on Windows converts them and every file then
+# looks changed to the next person on a different platform.
+* text=auto eol=lf
+
+*.gguf binary
+*.zip binary

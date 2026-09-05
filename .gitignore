@@ -1,0 +1,32 @@
+# The settings of the machine this was cloned onto: the models it has, what it allows
+# the prompt cache. Copied from settings.template.toml by install and filled in there.
+# Nothing about one machine belongs in the repository.
+settings.toml
+
+# The placements calibrate worked out for the card in this machine, written by it and
+# read by the router. It holds absolute paths belonging to the machine that generated
+# it, and figures measured on that card.
+llamacpp.models.ini
+
+# Written where the scripts run.
+logs/
+*.log
+*.pid
+
+# The llama.cpp releases, unpacked here by install: several hundred megabytes of
+# somebody else's build, and the directory an interrupted install leaves behind.
+.llamacpp/
+
+# Model weights.
+*.gguf
+
+# Compiled on the way to running the programs, and stale as soon as a module is renamed.
+__pycache__/
+
+# Backups of pi's configuration, and the temporary file it is written through.
+*.bak-*
+*.new
+
+# Plans, findings and test baselines. Nothing about how the work is organised belongs
+# in the repository.
+.workspace/
