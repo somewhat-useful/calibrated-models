@@ -28,18 +28,26 @@ is half a second of arithmetic that loads nothing, and calibration is rare.
 
 Everything about the cards is a list with an element per device, and a machine with one
 card is the list with one element in it. There is one way through this module whatever
-the length.
+the length: on one card the layers have one place to go, pieces of a prompt have nothing
+to run beside, and what is left is the search above.
+
+On several devices each point of the lever is also a question of where the layers go.
+The chain is filled from its end, the fastest device taking all it has room for, and the
+point is judged by the first device, which takes what is left. The micro-batch is a third
+lever, and whether the cards run pieces of a prompt at once a fourth; both are given up
+only for a window worth what they cost.
 """
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
+from fractions import Fraction
 
 from .estimate import Needs, Refused, Requirement
 from .facts import Head, ModelFacts
-from .machine import CudaIndex
+from .machine import CudaIndex, Installed
 from .nonempty import NonEmpty
-from .units import Halvings, Layers, Mib, Tokens
+from .units import Halvings, Layers, Mib, Port, Tokens
 
 # Video memory the CUDA driver holds before a single tensor is placed. It appears in no
 # log the loader writes and belongs to the driver rather than to any model, so it is
@@ -64,6 +72,13 @@ MIXTURE_WINDOW = Tokens(131000)
 # says otherwise. A target to land near rather than a line to clear.
 DEFAULT_RESERVE = Mib(1024)
 
+# What to leave on each card that drives a monitor, where the machine has several cards:
+# one of them can be worked at while the others serve, and a desktop wants room.
+DEFAULT_MULTI_GPU_RESERVE = Mib(2048)
+
+# What to leave on a slave's card: everything its own machine keeps, in one round figure.
+DEFAULT_SLAVE_RESERVE = Mib(2048)
+
 # The least any device is left for the system that drives it, whatever the settings file
 # asks. Windows keeps part of every card to itself, a desktop or not; tens of megabytes
 # either way make no difference, and a model that fails to allocate is lost outright.
@@ -80,6 +95,24 @@ DEFAULT_MIN_CTX = Tokens(25000)
 # the only thing left to lose. Where the line falls is, again, a judgement about the
 # work, so it is a setting.
 DEFAULT_AMPLE_CTX = Tokens(100000)
+
+# The smallest micro-batch a placement is asked at. Below it prefill slows for little
+# memory: the buffers that shrink with it are already small.
+SMALLEST_UBATCH = 128
+
+# What one halving of the micro-batch has to buy, as a share of the ample window. Halving
+# costs roughly a tenth of prefill speed, so it is worth taking only for a tenth of the
+# window a profile is meant to reach -- and past ample a window buys nothing.
+PREFILL_PER_HALVING = Fraction(1, 10)
+
+# How much longer a window has to be before the cards stop running pieces of a prompt at
+# once. Generation is several per cent faster with it, so it is given up only for a
+# window a good deal longer than it allows.
+WORTH_RUNNING_APART = Fraction(13, 10)
+
+# A tensor name nothing in a model is called. Telling llama.cpp where to put it moves
+# nothing, and any such override at all is what turns its pipeline parallelism off.
+NO_TENSOR = "no-tensor-is-called-this"
 
 
 class CacheType(Enum):
@@ -120,6 +153,14 @@ Placement = WholeCard | ExpertsOnCpu
 
 
 @dataclass(frozen=True)
+class Endpoint:
+    """Where a slave's llama.cpp worker listens."""
+
+    host: str
+    port: Port
+
+
+@dataclass(frozen=True)
 class Local:
     """A card in this machine: the number llama.cpp knows it by, and how much it has."""
 
@@ -127,20 +168,45 @@ class Local:
     total: Mib
 
 
-Device = Local
+@dataclass(frozen=True)
+class Remote:
+    """The card of a slave, lent through its worker, and how much memory it was named
+    as having."""
+
+    endpoint: Endpoint
+    memory: Mib
 
 
-# A tensor name nothing in a model is called. Telling llama.cpp where to put it moves
-# nothing, and any such override at all is what turns its pipeline parallelism off.
-NO_TENSOR = "no-tensor-is-called-this"
+Device = Local | Remote
+
+
+@dataclass(frozen=True, kw_only=True)
+class Worker:
+    """A slave as the settings file names it."""
+
+    endpoint: Endpoint
+    memory: Mib
+    reserve: Mib
+
+
+@dataclass(frozen=True, kw_only=True)
+class Reserves:
+    """What to leave on a machine's own cards.
+
+    alone is for a machine's only card. with_others is for each card driving a monitor
+    where there are several; a card driving none is left WINDOWS_SHARE.
+    """
+
+    alone: Mib
+    with_others: Mib
 
 
 class Pipeline(Enum):
     """Whether consecutive pieces of a prompt are processed on several cards at once.
 
     llama.cpp does it by itself on two local cards or more, and pays for it with extra
-    copies of the working buffers on every card. On one card there is nothing to run at
-    once, so a single card is always OFF.
+    copies of the working buffers on every card. Anywhere else there is nothing to run at
+    once, and a layout says OFF.
     """
 
     ON = "on"
@@ -218,7 +284,7 @@ class Allowed:
 EVERYTHING = Allowed(caches=frozenset({CacheType.Q8_0, CacheType.Q4_0}), head=True)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class Seat:
     """One device a placement may use: which it is, what it may hold, what to leave.
 
@@ -239,10 +305,12 @@ Chain = NonEmpty[Seat]
 class Limits:
     """What placements may spend, what is worth having, and what they run with.
 
-    Every chain is placed on its own and yields profiles of its own. ubatch is the
-    micro-batch the settings file runs with; min_ctx is the human's call about how short
-    a window stops being useful, and ample_ctx about how long a window stops wanting a
-    coarser cache to lengthen it.
+    Every chain is placed on its own and yields profiles of its own. The first is the
+    machine's own cards; one after it adds a slave to them, and is only worth a profile
+    where it holds a longer window than the first does. ubatch is the micro-batch the
+    settings file runs with; min_ctx is the human's call about how short a window stops
+    being useful, and ample_ctx about how long a window stops wanting a coarser cache to
+    lengthen it.
     """
 
     chains: NonEmpty[Chain]
@@ -267,7 +335,47 @@ def local_seat(index: CudaIndex, total: Mib, reserve: Mib) -> Seat:
     """A card in this machine, with what the driver keeps taken off the top."""
     return Seat(device=Local(index, total),
                 available=Mib(total - DRIVER_CONTEXT),
-                reserve=Mib(max(reserve, WINDOWS_SHARE)))
+                reserve=_at_least_windows(reserve))
+
+
+def remote_seat(worker: Worker) -> Seat:
+    """A slave's card. Nothing is taken off the top: the memory is a round figure a
+    person named, and what is left on it covers everything its own machine keeps."""
+    return Seat(device=Remote(worker.endpoint, worker.memory),
+                available=worker.memory,
+                reserve=_at_least_windows(worker.reserve))
+
+
+def _at_least_windows(reserve: Mib) -> Mib:
+    return Mib(max(reserve, WINDOWS_SHARE))
+
+
+def chains(cards: NonEmpty[Installed], workers: Sequence[Worker],
+           reserves: Reserves) -> NonEmpty[Chain]:
+    """Every chain of devices a model is placed across on this machine.
+
+    The machine's own cards first, all of them, the earliest generation first. A chain
+    is filled from its end, so the last card holds the most layers and the output and
+    the head besides, and the fastest card is the one to give them to. Then, for each
+    slave, the same cards behind its card: reached over the network, it is slower than
+    any of them, and it goes first.
+    """
+    several = len(cards) > 1
+    earliest_first = sorted(cards, key=lambda one: (one.capability, one.index))
+
+    first, *rest = (local_seat(one.index, one.card.total, _reserve(one, several, reserves))
+                    for one in earliest_first)
+    local = NonEmpty(first, *rest)
+
+    return NonEmpty(local, *(NonEmpty(remote_seat(worker), *local) for worker in workers))
+
+
+def _reserve(card: Installed, several: bool, reserves: Reserves) -> Mib:
+    if not several:
+        return reserves.alone
+    if card.drives_display:
+        return reserves.with_others
+    return Mib(0)
 
 
 def limits_for(chains: NonEmpty[Chain], ubatch: int, min_ctx: Tokens,
@@ -278,13 +386,21 @@ def limits_for(chains: NonEmpty[Chain], ubatch: int, min_ctx: Tokens,
 def holds(settings: Settings) -> NonEmpty[Mib]:
     """The video memory this placement holds on each device once it is loaded.
 
-    The other side of `spare`: everything the placement counted, plus the driver's own
-    context. This is the figure a free-memory reading has to be compared against, and
-    the one written into the preset for `vram` to read back.
+    The other side of `spare`: everything the placement counted, plus, on a card of this
+    machine, the driver's own context. This is the figure a free-memory reading has to be
+    compared against, and the one written into the preset for `vram` to read back.
     """
-    held = [Mib(device.total - spare)
-            for device, spare in zip(settings.layout.devices, settings.spare)]
-    return NonEmpty(*held)
+    first, *rest = (_held(device, spare)
+                    for device, spare in zip(settings.layout.devices, settings.spare))
+    return NonEmpty(first, *rest)
+
+
+def _held(device: Device, spare: Mib) -> Mib:
+    match device:
+        case Local(_, total):
+            return Mib(total - spare)
+        case Remote(_, memory):
+            return Mib(memory - spare)
 
 
 def micro_batch(ubatch: int, halvings: Halvings) -> int:
@@ -293,8 +409,27 @@ def micro_batch(ubatch: int, halvings: Halvings) -> int:
 
 
 def device_name(device: Device) -> str:
-    """What llama.cpp calls the device on its command line."""
-    return f"CUDA{device.index}"
+    """What llama.cpp calls the device on its command line. A slave's card is the one
+    device reached over RPC, so it is the first of those."""
+    match device:
+        case Local(index, _):
+            return f"CUDA{index}"
+        case Remote():
+            return "RPC0"
+
+
+def endpoints(layout: Layout) -> tuple[Endpoint, ...]:
+    """The workers a layout reaches over the network, in the order it uses them."""
+    return tuple(device.endpoint for device in layout.devices
+                 if isinstance(device, Remote))
+
+
+def runs_apart_by_override(layout: Layout) -> bool:
+    """Whether a layout has to override something to keep its cards from running pieces
+    of a prompt at once: several cards, all local, told OFF. Where a worker is in the
+    chain llama.cpp keeps them apart by itself."""
+    return (len(layout.devices) > 1 and layout.pipeline is Pipeline.OFF
+            and all(isinstance(device, Local) for device in layout.devices))
 
 
 def head_cost(facts: ModelFacts, cache: CacheType, ctx: Tokens) -> Mib:
@@ -382,105 +517,26 @@ def grid(facts: ModelFacts, limits: Limits) -> tuple[Point, ...]:
     return tuple(Point(Tokens(window), WholeCard()) for window in windows)
 
 
-def _trailing(facts: ModelFacts) -> Layers:
-    """The layers the loader counts after the model's blocks: the output, and the head's
-    own block where the file carries one. Both go on the last device."""
-    return Layers(1 + (1 if isinstance(facts.head, Head) else 0))
-
-
-@dataclass(frozen=True)
-class _Search:
-    """One search along the lever: a variant, on a chain, at a micro-batch."""
-
-    variant: Variant
-    chain: Chain
-    layout: Layout
-
-
-def _searches(facts: ModelFacts, allowed: Allowed,
-              limits: Limits) -> tuple[_Search, ...]:
-    """Every search the placements are settled by, chain by chain."""
-    found = []
-    for chain in limits.chains:
-        layout = Layout(devices=chain.map(lambda seat: seat.device),
-                        layers=NonEmpty(Layers(facts.n_layer + _trailing(facts))),
-                        halvings=Halvings(0),
-                        pipeline=Pipeline.OFF)
-        found.extend(_Search(variant, chain, layout)
-                     for variant in variants(facts, allowed))
-
-    return tuple(found)
-
-
-@dataclass(frozen=True)
-class _Known:
-    """What the answers say about one point of one search."""
-
-    needed: NonEmpty[Mib]
-    spare: NonEmpty[Mib]
-    fits: bool
-    clears_reserve: bool
-    # How far the placement lands from the reserve, from either side.
-    miss: int
-
-
-@dataclass(frozen=True)
-class _Ask:
-    question: Question
-
-
-@dataclass(frozen=True)
-class _Unanswerable:
-    """The estimator would not answer for a point the search needs, so this search
-    settles nothing. It is arithmetic, and asking again gets the same refusal."""
-
-
-def _known_at(facts: ModelFacts, search: _Search, points: Sequence[Point], index: int,
-              answers: Mapping[Question, Requirement]) -> _Known | _Ask | _Unanswerable:
-    point = points[index]
-    question = Question(point.ctx, search.variant.cache, point.placement, search.layout)
-    if question not in answers:
-        return _Ask(question)
-
-    match answers[question]:
-        case Refused():
-            return _Unanswerable()
-        case Needs() as answer if len(answer.cards) != len(search.chain):
-            # An answer about other devices than the ones asked about is no answer.
-            return _Unanswerable()
-        case Needs() as answer:
-            needed = requirement(facts, search.variant, point.ctx, answer)
-
-    spare = NonEmpty(*(Mib(seat.available - need)
-                       for seat, need in zip(search.chain, needed)))
-    gap = spare.first - search.chain.first.reserve
-
-    return _Known(needed=needed,
-                  spare=spare,
-                  fits=all(one >= 0 for one in spare),
-                  clears_reserve=gap >= 0,
-                  miss=abs(gap))
-
-
 def next_questions(facts: ModelFacts, allowed: Allowed, limits: Limits,
                    answers: Mapping[Question, Requirement]) -> tuple[Question, ...]:
     """What the estimator should be asked next. Empty when there is nothing left to ask.
 
-    Every search that has not finished contributes one question, so a round of asking
-    costs one pass whatever the file. A refusal ends that search rather than being
-    retried: the estimator is arithmetic and gives the same answer twice.
+    Every variant on every chain that has not finished contributes one question, so a
+    round of asking costs one pass whatever the file. A refusal ends that search rather
+    than being retried: the estimator is arithmetic and gives the same answer twice.
     """
     points = grid(facts, limits)
     if not points:
         return ()
 
     wanted: list[Question] = []
-    for search in _searches(facts, allowed, limits):
-        match _step(facts, search, points, answers):
-            case _Ask(question) if question not in wanted and question not in answers:
-                wanted.append(question)
-            case _Ask() | _Settled() | _Hopeless() | _Unanswerable():
-                pass
+    for chain in limits.chains:
+        for variant in variants(facts, allowed):
+            match _best(facts, limits, variant, chain, points, answers):
+                case _Ask(question) if question not in wanted and question not in answers:
+                    wanted.append(question)
+                case _Ask() | _Chosen() | _Nothing():
+                    pass
 
     return tuple(wanted)
 
@@ -492,26 +548,34 @@ def settings(facts: ModelFacts, allowed: Allowed, limits: Limits,
     A variant with nothing that fits contributes nothing: a dense model that cannot sit
     on this card whole is skipped rather than offloaded, and there is no Settings
     describing a placement that does not fit.
+
+    A chain with a slave in it is slower than the machine's own cards, so a placement on
+    it is kept only where its window is longer than the one the first chain settled on
+    for the same variant.
     """
     points = grid(facts, limits)
     if not points:
         return ()
 
     kept: list[Settings] = []
-    for chain in limits.chains:
+    own: dict[Variant, Tokens] = {}
+    for position, chain in enumerate(limits.chains):
         chosen = []
-        for search in _searches(facts, allowed, limits):
-            if search.chain != chain:
-                continue
-            match _step(facts, search, points, answers):
-                case _Settled(index, known):
-                    chosen.append(Settings(ctx=points[index].ctx,
-                                           cache=search.variant.cache,
-                                           head=search.variant.head,
+        for variant in variants(facts, allowed):
+            match _best(facts, limits, variant, chain, points, answers):
+                case _Chosen(index, known):
+                    window = points[index].ctx
+                    if position == 0:
+                        own[variant] = window
+                    elif variant in own and window <= own[variant]:
+                        continue
+                    chosen.append(Settings(ctx=window,
+                                           cache=variant.cache,
+                                           head=variant.head,
                                            placement=points[index].placement,
                                            spare=known.spare,
-                                           layout=search.layout))
-                case _Ask() | _Hopeless() | _Unanswerable():
+                                           layout=known.arranged.layout))
+                case _Ask() | _Nothing():
                     pass
 
         kept.extend(_worth_offering(chosen, limits))
@@ -571,6 +635,57 @@ def _worth_offering(chosen: list[Settings], limits: Limits) -> tuple[Settings, .
     return tuple(kept)
 
 
+# ---------------------------------------------------------------------------- the search
+
+
+@dataclass(frozen=True)
+class _Search:
+    """One search along the lever: a variant, on a chain, at a micro-batch, with the
+    cards running pieces of a prompt at once or not."""
+
+    variant: Variant
+    chain: Chain
+    halvings: Halvings
+    pipeline: Pipeline
+
+
+@dataclass(frozen=True)
+class _Ask:
+    question: Question
+
+
+@dataclass(frozen=True)
+class _Unanswerable:
+    """Nothing this search could be told would settle it: the estimator refused a point
+    it needs, which asking again would not change, or the chain has more devices than
+    the model has blocks to give them."""
+
+
+@dataclass(frozen=True)
+class _Arranged:
+    """Where the layers go at one point, and what that needs on every device.
+
+    short says, per device, that it holds a single block and still falls short of its
+    reserve: nowhere left to give a block to, which no other point of the lever mends.
+    """
+
+    layout: Layout
+    needed: NonEmpty[Mib]
+    short: NonEmpty[bool]
+
+
+@dataclass(frozen=True)
+class _Known:
+    """What the answers say about one point of one search."""
+
+    arranged: _Arranged
+    spare: NonEmpty[Mib]
+    fits: bool
+    clears_reserve: bool
+    # How far the placement lands from the reserve, from either side.
+    miss: int
+
+
 @dataclass(frozen=True)
 class _Settled:
     index: int
@@ -579,14 +694,229 @@ class _Settled:
 
 @dataclass(frozen=True)
 class _Hopeless:
-    """Not one point of this search fits on the card."""
+    """Not one point of this search fits on the cards."""
 
 
-_Step = _Ask | _Settled | _Hopeless | _Unanswerable
+@dataclass(frozen=True)
+class _Took:
+    """How many blocks a device takes, and whether one was already too many."""
+
+    blocks: Layers
+    short: bool
+
+
+@dataclass(frozen=True)
+class _Spare:
+    amount: Mib
+
+
+@dataclass(frozen=True)
+class _Chosen:
+    """The placement a variant settles on for a chain, at its micro-batch and pipeline."""
+
+    index: int
+    known: _Known
+
+
+@dataclass(frozen=True)
+class _Nothing:
+    """No placement of this variant fits this chain."""
+
+
+@dataclass(frozen=True)
+class _Within:
+    """A search that might beat what is already chosen, and is worth running."""
+
+
+@dataclass(frozen=True)
+class _Beyond:
+    """A search that cannot beat what is already chosen, whatever it finds."""
+
+
+@dataclass(frozen=True)
+class _OneWay:
+    pipeline: Pipeline
+
+
+@dataclass(frozen=True)
+class _TwoWays:
+    together: Pipeline
+    apart: Pipeline
+
+
+def _ways(chain: Chain) -> _OneWay | _TwoWays:
+    """How the cards of a chain may run a prompt.
+
+    Where llama.cpp runs pieces of it on the cards at once by itself -- two local cards
+    or more, and no worker in the chain -- keeping them apart is the other way, bought
+    with an override. Anywhere else there is one way.
+    """
+    if len(chain) > 1 and all(isinstance(seat.device, Local) for seat in chain):
+        return _TwoWays(together=Pipeline.ON, apart=Pipeline.OFF)
+    return _OneWay(Pipeline.OFF)
+
+
+def _halvings(ubatch: int) -> tuple[Halvings, ...]:
+    """The micro-batch the settings file runs with, then each halving of it down to the
+    smallest a placement is asked at. The file's own is always among them."""
+    steps = [Halvings(0)]
+    while micro_batch(ubatch, Halvings(len(steps))) >= SMALLEST_UBATCH:
+        steps.append(Halvings(len(steps)))
+    return tuple(steps)
+
+
+def _trailing(facts: ModelFacts) -> Layers:
+    """The layers the loader counts after the model's blocks: the output, and the head's
+    own block where the file carries one. Both go on the last device."""
+    return Layers(1 + (1 if isinstance(facts.head, Head) else 0))
+
+
+def _best(facts: ModelFacts, limits: Limits, variant: Variant, chain: Chain,
+          points: Sequence[Point],
+          answers: Mapping[Question, Requirement]) -> _Ask | _Chosen | _Nothing:
+    """The placement of one variant on one chain, every lever considered."""
+    match _ways(chain):
+        case _OneWay(pipeline):
+            return _rung(facts, limits, variant, chain, pipeline, points, answers)
+        case _TwoWays(together, apart):
+            match _rung(facts, limits, variant, chain, together, points, answers):
+                case _Ask() as asking:
+                    return asking
+                case _Nothing():
+                    return _rung(facts, limits, variant, chain, apart, points, answers)
+                case _Chosen() as running:
+                    return _apart_if_worth(facts, limits, variant, chain, running, apart,
+                                           points, answers)
+
+
+def _apart_if_worth(facts: ModelFacts, limits: Limits, variant: Variant, chain: Chain,
+                    together: _Chosen, apart: Pipeline, points: Sequence[Point],
+                    answers: Mapping[Question, Requirement]) -> _Ask | _Chosen:
+    """The cards kept from running pieces of a prompt at once, where the window that
+    buys is WORTH_RUNNING_APART times the one they have running together.
+
+    The one question that can rule it out is asked first, at the smallest micro-batch,
+    which holds the longest window any search of it could find.
+    """
+    window = points[together.index].ctx
+    longest = _Search(variant, chain, _halvings(limits.ubatch)[-1], apart)
+
+    match _probe(facts, longest, points, answers,
+                 lambda ctx: ctx >= window * WORTH_RUNNING_APART):
+        case _Ask() as asking:
+            return asking
+        case _Beyond():
+            return together
+        case _Within():
+            pass
+
+    match _rung(facts, limits, variant, chain, apart, points, answers):
+        case _Ask() as asking:
+            return asking
+        case _Chosen() as found if points[found.index].ctx >= window * WORTH_RUNNING_APART:
+            return found
+        case _Chosen() | _Nothing():
+            return together
+
+
+def _rung(facts: ModelFacts, limits: Limits, variant: Variant, chain: Chain,
+          pipeline: Pipeline, points: Sequence[Point],
+          answers: Mapping[Question, Requirement]) -> _Ask | _Chosen | _Nothing:
+    """The micro-batch that runs this variant best, and the placement at it.
+
+    The settings file's own micro-batch first, then each halving. A halving is kept only
+    where its window, counted no further than ample, is longer by PREFILL_PER_HALVING of
+    ample for every halving it took; equal is not enough, since the faster prefill is
+    worth having for nothing. A halving that could not reach that far is not searched.
+    """
+    best: _Chosen | _Nothing = _Nothing()
+    for halvings in _halvings(limits.ubatch):
+        search = _Search(variant, chain, halvings, pipeline)
+
+        match _reach(facts, limits, search, best, points, answers):
+            case _Ask() as asking:
+                return asking
+            case _Beyond():
+                continue
+            case _Within():
+                pass
+
+        match _step(facts, search, points, answers):
+            case _Ask() as asking:
+                return asking
+            case _Settled(index, known):
+                best = _better(limits, points, best, _Chosen(index, known))
+            case _Hopeless() | _Unanswerable():
+                pass
+
+    return best
+
+
+def _better(limits: Limits, points: Sequence[Point], best: _Chosen | _Nothing,
+            found: _Chosen) -> _Chosen:
+    match best:
+        case _Nothing():
+            return found
+        case _Chosen() if _score(limits, points, found) > _score(limits, points, best):
+            return found
+        case _Chosen():
+            return best
+
+
+def _score(limits: Limits, points: Sequence[Point], chosen: _Chosen) -> Fraction:
+    """A placement's window as a share of the ample one, counted no further than ample,
+    less what its halvings of the micro-batch cost."""
+    window = min(points[chosen.index].ctx, limits.ample_ctx)
+    halvings = chosen.known.arranged.layout.halvings
+    return Fraction(window, limits.ample_ctx) - PREFILL_PER_HALVING * halvings
+
+
+def _reach(facts: ModelFacts, limits: Limits, search: _Search, best: _Chosen | _Nothing,
+           points: Sequence[Point],
+           answers: Mapping[Question, Requirement]) -> _Ask | _Within | _Beyond:
+    """Whether a search at this micro-batch could beat the placement already chosen."""
+    match best:
+        case _Nothing():
+            return _Within()
+        case _Chosen():
+            needed = ((_score(limits, points, best) + PREFILL_PER_HALVING * search.halvings)
+                      * limits.ample_ctx)
+
+    if needed >= limits.ample_ctx:
+        return _Beyond()
+
+    return _probe(facts, search, points, answers, lambda ctx: ctx > needed)
+
+
+def _probe(facts: ModelFacts, search: _Search, points: Sequence[Point],
+           answers: Mapping[Question, Requirement],
+           enough: Callable[[Tokens], bool]) -> _Ask | _Within | _Beyond:
+    """Whether a search could settle on a window that is enough, asked of one point.
+
+    A search settles on a point that leaves the reserve, or on the one just past such a
+    point. Either way the point just short of the first window that is enough has to
+    leave the reserve, so where it does not, nothing the search finds is enough.
+    """
+    reaching = [index for index, point in enumerate(points) if enough(point.ctx)]
+    if not reaching:
+        return _Beyond()
+    if reaching[0] == 0:
+        return _Within()
+
+    match _known_at(facts, search, points, reaching[0] - 1, answers):
+        case _Ask() as asking:
+            return asking
+        case _Unanswerable():
+            return _Beyond()
+        case _Known() as known if known.clears_reserve:
+            return _Within()
+        case _Known():
+            return _Beyond()
 
 
 def _step(facts: ModelFacts, search: _Search, points: Sequence[Point],
-          answers: Mapping[Question, Requirement]) -> _Step:
+          answers: Mapping[Question, Requirement]
+          ) -> _Ask | _Settled | _Hopeless | _Unanswerable:
     """Where one search stands: what to ask next, or what it settled on.
 
     Pure in the answers, so the same table always gives the same step and the search can
@@ -647,3 +977,163 @@ def _nearer(low: int, under: _Known, high: int, over: _Known) -> _Settled:
     if over.miss < under.miss:
         return _Settled(high, over)
     return _Settled(low, under)
+
+
+def _known_at(facts: ModelFacts, search: _Search, points: Sequence[Point], index: int,
+              answers: Mapping[Question, Requirement]) -> _Known | _Ask | _Unanswerable:
+    """One point of one search, judged.
+
+    Every device after the first has already been brought as near its reserve as whole
+    blocks allow, so it is the first, holding what was left, that says how far the point
+    is from the reserve -- unless a later device holds a single block and still falls
+    short, which no layout of this point can mend and which is then what the point misses
+    by. On one card the first device is the card, and this is the card's own spare
+    against its reserve.
+    """
+    match _arranged(facts, search, points[index], answers):
+        case _Ask() | _Unanswerable() as waiting:
+            return waiting
+        case _Arranged() as arranged:
+            pass
+
+    chain = search.chain
+    first, *rest = (Mib(seat.available - need) for seat, need in zip(chain, arranged.needed))
+    spare = NonEmpty(first, *rest)
+
+    gap = spare.first - chain.first.reserve
+    shortfalls = tuple(amount - seat.reserve
+                       for seat, amount, short in zip(chain, spare, arranged.short)
+                       if short and amount < seat.reserve)
+
+    return _Known(arranged=arranged,
+                  spare=spare,
+                  fits=all(one >= 0 for one in spare),
+                  clears_reserve=gap >= 0 and not shortfalls,
+                  miss=max((abs(gap), *(abs(one) for one in shortfalls))))
+
+
+def _arranged(facts: ModelFacts, search: _Search, point: Point,
+              answers: Mapping[Question, Requirement]) -> _Arranged | _Ask | _Unanswerable:
+    """Where the layers go at one point of the lever, and what that needs on each device.
+
+    The chain is filled from its end. The last device, the fastest, takes blocks from the
+    end of the model for as long as each one brings what it leaves nearer its reserve,
+    and never one it has no room for; the device before it does the same with what is
+    left, and the first takes the rest. The reserve is a target here as everywhere, so a
+    device that can take one more block by missing it slightly takes the block.
+    """
+    count = len(search.chain)
+    if count > facts.n_layer:
+        return _Unanswerable()
+
+    after: tuple[Layers, ...] = ()
+    short: tuple[bool, ...] = ()
+    left = facts.n_layer
+    for position in range(count - 1, 0, -1):
+        match _blocks_for(facts, search, point, position, left, after, answers):
+            case _Ask() | _Unanswerable() as waiting:
+                return waiting
+            case _Took(blocks, fell_short):
+                after = (blocks, *after)
+                short = (fell_short, *short)
+                left -= blocks
+
+    question = _question(facts, search, point, NonEmpty(Layers(left), *after))
+    match _needed(facts, search, point, question, answers):
+        case _Ask() | _Unanswerable() as waiting:
+            return waiting
+        case NonEmpty() as needed:
+            return _Arranged(question.layout, needed, NonEmpty(False, *short))
+
+
+def _blocks_for(facts: ModelFacts, search: _Search, point: Point, position: int,
+                left: int, after: tuple[Layers, ...],
+                answers: Mapping[Question, Requirement]) -> _Took | _Ask | _Unanswerable:
+    """How many of the blocks still to place the device at `position` takes.
+
+    What a device needs grows with every block it holds, so the count that leaves its
+    reserve is found by bisection, and of it and the count one past, the nearer to the
+    reserve is taken. Every device before it keeps at least one block.
+    """
+    reserve = search.chain[position].reserve
+    most = left - position
+
+    def spare_with(blocks: int) -> _Spare | _Ask | _Unanswerable:
+        return _spare_with(facts, search, point, position, left, after, blocks, answers)
+
+    match spare_with(1):
+        case _Ask() | _Unanswerable() as waiting:
+            return waiting
+        case _Spare(one) if one < reserve:
+            return _Took(Layers(1), short=True)
+        case _Spare(one):
+            pass
+
+    match spare_with(most):
+        case _Ask() | _Unanswerable() as waiting:
+            return waiting
+        case _Spare(full) if full >= reserve:
+            return _Took(Layers(most), short=False)
+        case _Spare(full):
+            pass
+
+    low, above, high, below = 1, one, most, full
+    while high - low > 1:
+        middle = (low + high) // 2
+        match spare_with(middle):
+            case _Ask() | _Unanswerable() as waiting:
+                return waiting
+            case _Spare(amount) if amount >= reserve:
+                low, above = middle, amount
+            case _Spare(amount):
+                high, below = middle, amount
+
+    if below >= 0 and reserve - below < above - reserve:
+        return _Took(Layers(high), short=False)
+    return _Took(Layers(low), short=False)
+
+
+def _spare_with(facts: ModelFacts, search: _Search, point: Point, position: int,
+                left: int, after: tuple[Layers, ...], blocks: int,
+                answers: Mapping[Question, Requirement]) -> _Spare | _Ask | _Unanswerable:
+    """What the device at `position` leaves holding this many blocks, the devices after
+    it holding what they already took and the rest of the model on the devices before
+    it: one block on each of them but the first, which holds the remainder."""
+    between = [Layers(1)] * (position - 1)
+    trial = NonEmpty(Layers(left - blocks - (position - 1)), *between, Layers(blocks),
+                     *after)
+
+    match _needed(facts, search, point, _question(facts, search, point, trial), answers):
+        case _Ask() | _Unanswerable() as waiting:
+            return waiting
+        case NonEmpty() as needed:
+            return _Spare(Mib(search.chain[position].available - needed[position]))
+
+
+def _question(facts: ModelFacts, search: _Search, point: Point,
+              blocks: NonEmpty[Layers]) -> Question:
+    """The question about this many blocks on each device of the search's chain."""
+    *before, last = blocks
+    layout = Layout(devices=search.chain.map(lambda seat: seat.device),
+                    layers=NonEmpty(*before, Layers(last + _trailing(facts))),
+                    halvings=search.halvings,
+                    pipeline=search.pipeline)
+
+    return Question(point.ctx, search.variant.cache, point.placement, layout)
+
+
+def _needed(facts: ModelFacts, search: _Search, point: Point, question: Question,
+            answers: Mapping[Question, Requirement]
+            ) -> NonEmpty[Mib] | _Ask | _Unanswerable:
+    """What a question's answer says each device needs, the head counted in."""
+    if question not in answers:
+        return _Ask(question)
+
+    match answers[question]:
+        case Refused():
+            return _Unanswerable()
+        case Needs() as answer if len(answer.cards) != len(search.chain):
+            # An answer about other devices than the ones asked about is no answer.
+            return _Unanswerable()
+        case Needs() as answer:
+            return requirement(facts, search.variant, point.ctx, answer)

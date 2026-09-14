@@ -11,8 +11,9 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from .config import Runtime
-from .place import (NO_TENSOR, ExpertsOnCpu, Layout, Pipeline, Question, device_name,
-                    micro_batch)
+from .place import (NO_TENSOR, ExpertsOnCpu, Layout, Question, device_name, endpoints,
+                    micro_batch, runs_apart_by_override)
+from .rpc import written
 
 # Every layer on the card, as llama.cpp spells it.
 ALL_LAYERS = "99"
@@ -59,21 +60,29 @@ def _split(layout: Layout) -> Sequence[str]:
     if len(layout.devices) == 1:
         return ("--split-mode", "none")
 
-    return ("--split-mode", "layer",
+    return (*_workers(layout),
+            "--split-mode", "layer",
             "--device", ",".join(device_name(one) for one in layout.devices),
             "--tensor-split", ",".join(str(count) for count in layout.layers),
-            *_pipeline(layout))
+            *_apart(layout))
 
 
-def _pipeline(layout: Layout) -> Sequence[str]:
-    """Nothing where the cards run pieces of a prompt at once, which llama.cpp does by
-    itself; an override that moves nothing where they do not, since any override at all
-    is what turns it off."""
-    match layout.pipeline:
-        case Pipeline.ON:
-            return ()
-        case Pipeline.OFF:
-            return ("-ot", f"{NO_TENSOR}={device_name(layout.devices.first)}")
+def _workers(layout: Layout) -> Sequence[str]:
+    """The workers the chain reaches, for llama.cpp to connect to before it counts its
+    devices: a slave's card is not one of them until then."""
+    reached = endpoints(layout)
+    if not reached:
+        return ()
+    return ("--rpc", ",".join(written(one) for one in reached))
+
+
+def _apart(layout: Layout) -> Sequence[str]:
+    """An override that moves nothing, where cards that would run pieces of a prompt at
+    once by themselves are to be kept apart: any override at all is what turns that
+    off."""
+    if runs_apart_by_override(layout):
+        return ("-ot", f"{NO_TENSOR}={device_name(layout.devices.first)}")
+    return ()
 
 
 def _placement(question: Question) -> Sequence[str]:

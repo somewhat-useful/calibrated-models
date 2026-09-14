@@ -10,8 +10,9 @@ from pathlib import Path
 
 from .machine import Card, SystemMemory
 from .nonempty import NonEmpty
-from .place import ExpertsOnCpu
+from .place import Endpoint, ExpertsOnCpu
 from .render import Placed
+from .rpc import written
 from .units import Mib
 
 
@@ -19,6 +20,21 @@ def opening(card: Card, available: Mib, reserve: Mib) -> str:
     """What the placements are being computed against."""
     return (f"{card.name}, {card.total} MiB, {available} MiB placeable, "
             f"leaving about {reserve} free")
+
+
+def remote(endpoint: Endpoint, available: Mib, reserve: Mib) -> str:
+    """A slave's card, which is known here only by where it answers and what it was
+    named as having."""
+    return (f"slave at {written(endpoint)}, {available} MiB placeable, "
+            f"leaving about {reserve} free")
+
+
+def unreachable(endpoint: Endpoint) -> str:
+    """A slave that is named and did not answer. The preset this run writes has no
+    profile using its card, which is worth saying before anything else is."""
+    return (f"The slave at {written(endpoint)} does not answer, so no profile uses its "
+            "card this time. Start its worker there and run calibrate again: "
+            "python -m cm.slave start")
 
 
 def system(memory: SystemMemory) -> str:

@@ -1,4 +1,5 @@
-"""calibrate: work out where each model in the settings file sits on this card.
+"""calibrate: work out where each model in the settings file sits on this machine's
+cards.
 
 The loop is here and it decides nothing. The core says which configuration to ask the
 estimator about, this asks, and the core decides once the answers are in. Every number
@@ -10,15 +11,14 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from . import (devices, files, invoke, place, proc, reading, releases, render,
+from . import (devices, files, invoke, place, proc, reach, reading, releases, render,
                report, workspace)
-from .config import Config, ConfigError, Model
+from .config import Config, ConfigError, Model, NoSlave
 from .estimate import parse_requirement
 from .facts import parse_facts
-from .machine import UnreadableDevice, system_memory
+from .machine import Machine, UnreadableDevice, system_memory
 from .name import names
-from .nonempty import NonEmpty
-from .place import Limits
+from .place import Limits, Local, Remote, Reserves, Worker
 from .render import Placed
 from .units import Mib
 
@@ -42,8 +42,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 def _arguments(argv: Sequence[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="calibrate",
-        description="Place every model in the settings file on this machine's card "
-                    "and write the router's preset file.")
+        description="Place every model in the settings file on this machine's "
+                    "cards, and on a slave's card where one is named and "
+                    "answers, and write the router's preset file.")
     parser.add_argument("--settings", type=Path, default=reading.DEFAULT,
                         help="the settings file to read")
     return parser.parse_args(list(argv))
@@ -58,12 +59,13 @@ def _calibrate(settings: Path) -> None:
 
     estimator = _estimator(workspace.engines())
     machine = devices.probe()
-    first = machine.cards.first
-    seat = place.local_seat(first.index, first.card.total, read.reserve)
-    limits = place.limits_for(NonEmpty(NonEmpty(seat)), read.runtime.ubatch,
-                              read.min_ctx, read.ample_ctx)
+    reserves = Reserves(alone=read.reserve, with_others=read.reserve_multi_gpu)
+    chains = place.chains(machine.cards, _reachable(read.slave), reserves)
+    limits = place.limits_for(chains, read.runtime.ubatch, read.min_ctx,
+                              read.ample_ctx)
 
-    print(report.opening(first.card, seat.available, seat.reserve))
+    for line in _seats(machine, limits):
+        print(line)
     print()
 
     placed = []
@@ -91,6 +93,44 @@ def _names_nothing(settings: Path, read: Config) -> str:
 
     return (f"{settings.name} names no model, so there is nothing to place.\n"
             "Write an entry for everything in the library: python -m cm.scan")
+
+
+def _reachable(slave: NoSlave | Worker) -> tuple[Worker, ...]:
+    """The slave, where one is named and its worker answers.
+
+    One that does not answer is said out loud and left out: the estimator cannot ask
+    about a card it cannot reach, and the machine's own cards are placed regardless.
+    """
+    match slave:
+        case NoSlave():
+            return ()
+        case Worker() as worker if reach.reachable(worker.endpoint):
+            return (worker,)
+        case Worker() as worker:
+            print(report.unreachable(worker.endpoint))
+            print()
+            return ()
+
+
+def _seats(machine: Machine, limits: Limits) -> tuple[str, ...]:
+    """Every device the placements are computed against, once each, in chain order."""
+    cards = {one.index: one.card for one in machine.cards}
+
+    lines = []
+    said = set()
+    for chain in limits.chains:
+        for seat in chain:
+            if seat.device in said:
+                continue
+            said.add(seat.device)
+            match seat.device:
+                case Local(index, _):
+                    lines.append(report.opening(cards[index], seat.available,
+                                                seat.reserve))
+                case Remote(endpoint, _):
+                    lines.append(report.remote(endpoint, seat.available, seat.reserve))
+
+    return tuple(lines)
 
 
 def _estimator(engines: Path) -> Path:

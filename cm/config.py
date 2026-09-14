@@ -17,8 +17,10 @@ from pathlib import Path, PurePath
 from .library import Key
 from .lmstudio import Found, Library, Missing
 from .machine import GIBIBYTE, Budget, Fitted, Fixed, Share
-from .place import (DEFAULT_AMPLE_CTX, DEFAULT_MIN_CTX, DEFAULT_RESERVE, EVERYTHING,
-                    Allowed, CacheType)
+from . import rpc
+from .place import (DEFAULT_AMPLE_CTX, DEFAULT_MIN_CTX, DEFAULT_MULTI_GPU_RESERVE,
+                    DEFAULT_RESERVE, DEFAULT_SLAVE_RESERVE, EVERYTHING, Allowed,
+                    CacheType, Endpoint, Worker)
 from .recommended import Advised, Recommended, Setting, Unknown
 from .serving import (DEFAULT_HOST, DEFAULT_IDLE, DEFAULT_PORT, DEFAULT_RESIDENT, LOGS,
                       Serving)
@@ -37,6 +39,7 @@ DERIVED = frozenset({
     "model", "ctx-size", "cache-type-k", "cache-type-v", "gpu-layers", "n-cpu-moe",
     "fit", "fit-target", "spec-type", "spec-draft-n-max", "spec-draft-type-k",
     "spec-draft-type-v", "threads", "threads-batch", "cache-ram",
+    "device", "split-mode", "tensor-split", "ubatch-size", "rpc", "override-tensor",
 })
 
 
@@ -110,6 +113,11 @@ class Model:
 
 
 @dataclass(frozen=True)
+class NoSlave:
+    """The file names no slave: every placement is on this machine's own cards."""
+
+
+@dataclass(frozen=True)
 class Config:
     """The settings file, read."""
 
@@ -128,6 +136,10 @@ class Config:
     # Entries set aside with hidden = true. Nothing is placed or served for them; they
     # are here so scan can see that their files are already named and leave them alone.
     withheld: tuple[Model, ...]
+    # What to leave on each card driving a monitor, where the machine has several.
+    reserve_multi_gpu: Mib = DEFAULT_MULTI_GPU_RESERVE
+    # The machine lending its card, where the file names one.
+    slave: NoSlave | Worker = NoSlave()
 
 
 def parse(text: str, library: Library) -> Config:
@@ -169,6 +181,9 @@ def parse(text: str, library: Library) -> Config:
         shared=shared,
         models=tuple(one.model for one in read if not one.hidden),
         withheld=tuple(one.model for one in read if one.hidden),
+        reserve_multi_gpu=Mib(_whole(raw, "reserve_multi_gpu_mib",
+                                     DEFAULT_MULTI_GPU_RESERVE)),
+        slave=_slave(raw),
     )
 
 
@@ -627,6 +642,104 @@ def _written(text: str) -> Budget:
     if amount > 100:
         raise ConfigError("cache_ram: a share over 100% is more memory than there is")
     return Share(amount)
+
+
+SLAVE = "slave"
+
+_SLAVE_MEMORY = "slave: memory is the size of its card in gibibytes: 12, '12G' or '12GiB'"
+
+
+def _slave(raw: Mapping[str, object]) -> NoSlave | Worker:
+    """The machine lending its card, where the file names one.
+
+    The address and the memory have to be written; what is left on the card has a
+    default. The memory is a person's round figure for that card, since nothing on this
+    machine can read it.
+    """
+    if SLAVE not in raw:
+        return NoSlave()
+
+    table = raw[SLAVE]
+    if not isinstance(table, dict):
+        raise ConfigError("slave must be a table: [slave], with address = and memory = "
+                          "under it")
+
+    said = table.get("address")
+    if not isinstance(said, str) or not said.strip():
+        raise ConfigError("slave: address is not set")
+
+    match rpc.endpoint(said, rpc.DEFAULT_PORT):
+        case rpc.Unreadable(why):
+            raise ConfigError(f"slave: address {why}")
+        case Endpoint() as reached:
+            pass
+
+    reserve = table.get("reserve_mib", DEFAULT_SLAVE_RESERVE)
+    if isinstance(reserve, bool) or not isinstance(reserve, int) or reserve < 0:
+        raise ConfigError("slave: reserve_mib must be a whole number")
+
+    return Worker(endpoint=reached, memory=gibibytes(table.get("memory")),
+                  reserve=Mib(reserve))
+
+
+def gibibytes(size: object) -> Mib:
+    """A slave's memory as a person writes it: 12, '12G', '12Gb' or '12GiB'."""
+    if isinstance(size, int) and not isinstance(size, bool) and size > 0:
+        return Mib(size * GIBIBYTE)
+
+    if isinstance(size, str):
+        read = _SIZE.match(size.strip())
+        if read is not None and read[2] != "%" and int(read[1]) > 0:
+            return Mib(int(read[1]) * GIBIBYTE)
+
+    raise ConfigError(_SLAVE_MEMORY)
+
+
+# The slave's own table, and the slave written any way at all: as that table, as a table
+# under it, as a key given a value, or through a dot.
+_SLAVE_TABLE = re.compile(r"^\[slave\]\s*$")
+_SLAVE_ANYHOW = re.compile(r"^\s*(\[slave[.\]\s]|slave\s*[.=])")
+
+
+def slaved(text: str, worker: Worker) -> str:
+    """The settings text naming this slave, in place of any it named before.
+
+    Appended at the end: a table can stand anywhere after the keys at the top, and the
+    end is the one place that is never inside somebody's own table.
+    """
+    block = ["[slave]",
+             f"address     = {_quoted(rpc.written(worker.endpoint))}",
+             f"memory      = {_quoted(f'{worker.memory // GIBIBYTE}G')}",
+             f"reserve_mib = {worker.reserve}"]
+
+    return "\n".join([unslaved(text).rstrip("\n"), "", "", *block]) + "\n"
+
+
+def unslaved(text: str) -> str:
+    """The settings text naming no slave.
+
+    A slave written in a way this cannot take out whole -- inline, dotted, or opened more
+    than once -- is refused rather than half removed: TOML reads a table declared twice
+    as no file at all. What introduces whatever follows the table stays.
+    """
+    lines = text.splitlines()
+    opened = tuple(index for index, line in enumerate(lines) if _SLAVE_TABLE.match(line))
+    anyhow = tuple(index for index, line in enumerate(lines) if _SLAVE_ANYHOW.match(line))
+
+    if anyhow != opened or len(opened) > 1:
+        raise ConfigError("the settings file names its slave in a form that cannot be "
+                          "rewritten; edit its [slave] by hand")
+    if not opened:
+        return text
+
+    start = opened[0]
+    closed = next((index for index in range(start + 1, len(lines))
+                   if _TABLE.match(lines[index])), len(lines))
+    ends = _before(lines, range(start + 1, closed))
+    while start > 0 and not lines[start - 1].strip():
+        start -= 1
+
+    return "\n".join([*lines[:start], *lines[ends:]]) + "\n"
 
 
 def _whole(raw: Mapping[str, object], key: str, fallback: int) -> int:

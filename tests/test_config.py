@@ -306,7 +306,9 @@ class ADerivedKeyIsRefusedRatherThanObeyed(unittest.TestCase):
         written = {"model", "ctx-size", "fit", "gpu-layers", "cache-type-k",
                    "cache-type-v", "n-cpu-moe", "spec-type", "spec-draft-n-max",
                    "spec-draft-type-k", "spec-draft-type-v",
-                   "threads", "threads-batch", "cache-ram", "fit-target"}
+                   "threads", "threads-batch", "cache-ram", "fit-target",
+                   "device", "split-mode", "tensor-split", "ubatch-size", "rpc",
+                   "override-tensor"}
 
         self.assertEqual(written, set(config.DERIVED))
 
