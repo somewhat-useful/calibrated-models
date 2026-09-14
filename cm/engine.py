@@ -26,9 +26,10 @@ from .config import ConfigError
 from .lmstudio import Found, Library, Missing
 from .refusal import Refusal
 from .releases import Release
+from .rpc import WORKER
 from .serving import SERVER
 from .units import Bytes
-from .upstream import Absent, Asset, Latest, Present
+from .upstream import Absent, Asset, Cuda, Latest, Present
 
 # GitHub asks every caller to say what it is, and turns away one that does not.
 HEADERS = {"User-Agent": "llamacpp-local-updater"}
@@ -45,13 +46,21 @@ def install(settings: Path, check: bool, force: bool) -> None:
     _settings(settings)
 
     read = reading.read(settings)
+    release(read.cuda, read.keep_releases, check, force,
+            then="Restart the router to run on it: python -m cm.router start")
+
+
+def release(cuda: Cuda, keep: int, check: bool, force: bool, then: str) -> None:
+    """The newest release published for this CUDA version, put here, and the ones past
+    keeping removed. `then` is what to do once a new one is in, which depends on what
+    this machine runs from it."""
     root = workspace.engines()
 
     installed = releases.releases(files.directories(root))
-    print(f"llama.cpp under {root}, CUDA {read.cuda.version}")
+    print(f"llama.cpp under {root}, CUDA {cuda.version}")
     print("Installed: " + (", ".join(one.name for one in installed) or "none"))
 
-    latest = upstream.latest(upstream.published(_answer()), read.cuda)
+    latest = upstream.latest(upstream.published(_answer()), cuda)
     if latest.incomplete:
         print("Skipped (archive not uploaded yet): "
               + ", ".join(f"b{build}" for build in latest.incomplete))
@@ -61,7 +70,7 @@ def install(settings: Path, check: bool, force: bool) -> None:
         print("Already on the latest build. Nothing to do.")
         return
 
-    target = root / upstream.directory(latest.build, read.cuda)
+    target = root / upstream.directory(latest.build, cuda)
 
     if check:
         _would(installed, latest, target)
@@ -69,11 +78,11 @@ def install(settings: Path, check: bool, force: bool) -> None:
 
     files.ensure(root)
     _assemble(root, installed, latest, target)
-    _prune(root, read.keep_releases)
+    _prune(root, keep)
 
     print()
     print(f"Now running: {_server(root)}")
-    print("Restart the router to run on it: python -m cm.router start")
+    print(then)
 
 
 def _settings(settings: Path) -> None:
@@ -272,7 +281,7 @@ def _flatten(staging: Path) -> None:
 
 def _prune(root: Path, keep: int) -> None:
     """The releases past keeping, removed -- except one a server is running from."""
-    running = session.executing(SERVER)
+    running = session.executing(SERVER) | session.executing(WORKER)
     installed = releases.releases(files.directories(root))
     serving = {one.name for one in installed
                if str(root / one.name).lower() in running}

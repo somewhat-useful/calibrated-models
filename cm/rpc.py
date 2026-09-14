@@ -1,10 +1,11 @@
 """A slave: a machine lending its card to the router's machine through a llama.cpp worker.
 
 Nothing here is opened or run. This says what the worker is, where it is reached, how an
-address a person typed names one, and what the worker is started with.
+address a person typed names one, what the worker is started with and where it writes.
 """
 
 from dataclasses import dataclass
+from pathlib import Path
 
 from .place import Endpoint
 from .units import Port
@@ -54,3 +55,19 @@ def arguments(port: Port, device: str) -> tuple[str, ...]:
     model again does not send them again.
     """
     return ("--host", "0.0.0.0", "--port", str(port), "--device", device, "--cache")
+
+
+@dataclass(frozen=True)
+class Logs:
+    """What a running worker leaves behind. It has no log of its own to be told about, so
+    its two streams are what it says."""
+
+    out: Path
+    err: Path
+    pid: Path
+
+
+def logs(directory: Path) -> Logs:
+    return Logs(out=directory / "slave.stdout.log",
+                err=directory / "slave.stderr.log",
+                pid=directory / "slave.pid")

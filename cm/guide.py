@@ -4,10 +4,10 @@ No state between them, which is what makes the order worth writing down: nothing
 refuses because something else has not run yet, so the only thing saying what comes next
 is this.
 
-The path is the ordinary one, start to finish on a machine that has nothing yet. Two
-commands sit off it -- one asks the card what it can load right now, one takes a model
-out of service -- and they are listed apart rather than numbered into a sequence they
-are not part of.
+The path is the ordinary one, start to finish on a machine that has nothing yet. Some
+commands sit off it -- one asks the card what it can load right now, one stops the
+router, two start and stop a slave's worker by hand -- and they are listed apart
+rather than numbered into a sequence they are not part of.
 """
 
 from collections.abc import Sequence
@@ -71,11 +71,19 @@ PATH = (
         Step("pi <host>", "point pi at the router and list what it serves",
              settings=False),
     )),
+    Stage("6. Another machine lending its card", (
+        Step("install slave", "on it: llama.cpp and its worker (asks for rights)",
+             settings=True),
+        Step("install master", "here: name it in the settings, then calibrate again",
+             settings=True),
+    )),
 )
 
 BESIDE = (
     Step("vram", "what the card can load now, and what to close", settings=True),
     Step("router stop", "stop the server holding the router's port", settings=True),
+    Step("slave start", "on a slave: start its worker by hand", settings=True),
+    Step("slave stop", "on a slave: stop its worker", settings=True),
 )
 
 

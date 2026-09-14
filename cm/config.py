@@ -187,6 +187,29 @@ def parse(text: str, library: Library) -> Config:
     )
 
 
+@dataclass(frozen=True)
+class Lending:
+    """What a machine lending its card reads from its settings file: which releases it
+    installs and keeps, and where its worker writes."""
+
+    cuda: Cuda
+    keep_releases: int
+    logs: Path
+
+
+def lending(text: str) -> Lending:
+    """The settings text as a slave reads it.
+
+    None of it has to be there, and neither does the file: a machine lending its card
+    names no model and keeps no library, and every key a slave reads has a default.
+    """
+    raw = tomllib.loads(text)
+
+    return Lending(cuda=Cuda(_text(raw, "cuda_version", DEFAULT_CUDA.version)),
+                   keep_releases=_whole(raw, "keep_releases", DEFAULT_KEPT),
+                   logs=_logs(raw))
+
+
 def naming_the_library(text: str, models: Path) -> str:
     """The settings text, with model_root naming this directory.
 

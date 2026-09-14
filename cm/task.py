@@ -18,6 +18,8 @@ from pathlib import Path
 from typing import NewType
 from xml.sax.saxutils import escape
 
+from .units import Port
+
 # What the task is called. router.py ends it before starting a router of its own -- one
 # card takes one server -- so the two have to mean the same task, and they do by reading
 # the name from here.
@@ -26,6 +28,13 @@ NAME = "llama.cpp router"
 DESCRIPTION = ("llama.cpp router: serves the models the settings file names on one "
                "OpenAI-compatible endpoint, loading one on demand and unloading it "
                "when idle.")
+
+# What the worker's task is called. slave.py ends it before starting a worker of its
+# own -- one port takes one worker -- so the two read the name from here.
+WORKER_NAME = "llama.cpp RPC worker"
+
+WORKER_DESCRIPTION = ("llama.cpp RPC worker: lends this machine's card to a llama.cpp "
+                      "router on another machine of the local network.")
 
 # DOMAIN\\user, which is what the scheduler resolves to an account.
 Account = NewType("Account", str)
@@ -50,6 +59,13 @@ def arguments(settings: Path) -> str:
     return f'-m cm.router start --foreground --settings "{settings}"'
 
 
+def worker_arguments(port: Port, settings: Path) -> str:
+    """The worker, told to hold the console the task gives it, on the port the
+    router's machine was given, and the settings file named in full for the same
+    reason as the router's."""
+    return f'-m cm.slave start --foreground --port {port} --settings "{settings}"'
+
+
 def document(started: Runs, account: Account) -> str:
     """The task as the scheduler reads it.
 
@@ -59,10 +75,21 @@ def document(started: Runs, account: Account) -> str:
     files and holding a port has no use for it, and a task that runs elevated is one
     more thing on the machine that does.
     """
+    return _document(started, account, DESCRIPTION)
+
+
+def worker_document(started: Runs, account: Account) -> str:
+    """The worker's task: the router's in everything -- this account without a
+    password, at boot, restarted if it fails -- but what it says it is.
+    """
+    return _document(started, account, WORKER_DESCRIPTION)
+
+
+def _document(started: Runs, account: Account, description: str) -> str:
     return f"""<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.3" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
-    <Description>{escape(DESCRIPTION)}</Description>
+    <Description>{escape(description)}</Description>
   </RegistrationInfo>
   <Principals>
     <Principal id="Author">
