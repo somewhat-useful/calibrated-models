@@ -13,10 +13,12 @@ import math
 import unittest
 
 from cm import place
-from cm.estimate import Needs, Refused
+from cm.estimate import Refused
 from cm.facts import Head, ModelFacts, NoHead
+from cm.nonempty import NonEmpty
 from cm.place import CacheType, ExpertsOnCpu, Question, WholeCard
 from cm.units import Layers, Mib, Tokens
+from one_card import LAYOUT, UBATCH, chains, needs
 
 CARD = Mib(16303)
 RESERVE = Mib(1024)
@@ -60,7 +62,7 @@ def straight_line(fixed, per_token, per_offloaded_layer=0):
             # test could not tell a placement that offloads from one that does not.
             needed -= per_offloaded_layer * question.placement.layers
             held = per_offloaded_layer * question.placement.layers
-        return Needs(card=Mib(round(needed)), host=Mib(round(held)))
+        return needs(Mib(round(needed)), Mib(round(held)))
 
     return law
 
@@ -68,7 +70,7 @@ def straight_line(fixed, per_token, per_offloaded_layer=0):
 def run(facts, card, reserve, law, min_ctx=MIN_CTX, ample_ctx=AMPLE_CTX,
         allowed=place.EVERYTHING):
     """Drive the core the way cli.py will: ask what it asks, hand back the answers."""
-    limits = place.limits_for(card, reserve, min_ctx, ample_ctx)
+    limits = place.limits_for(chains(card, reserve), UBATCH, min_ctx, ample_ctx)
     answers = {}
 
     for _ in range(ROUND_LIMIT):
@@ -86,9 +88,9 @@ def run(facts, card, reserve, law, min_ctx=MIN_CTX, ample_ctx=AMPLE_CTX,
 def every_point(facts, limits, variant, law):
     """What each point of the grid would leave the card, if it fits at all."""
     for point in place.grid(facts, limits):
-        question = Question(point.ctx, variant.cache, point.placement)
-        needed = place.requirement(facts, variant, point.ctx, law(question))
-        spare = limits.available - needed
+        question = Question(point.ctx, variant.cache, point.placement, LAYOUT)
+        needed = place.requirement(facts, variant, point.ctx, law(question)).first
+        spare = limits.chains.first.first.available - needed
         if spare >= 0:
             yield point, spare
 
@@ -108,7 +110,7 @@ class TheCardIsNeverExceeded(unittest.TestCase):
                 chosen, _, _ = run(DENSE, Mib(card), RESERVE, law)
 
                 for settings in chosen:
-                    self.assertGreaterEqual(settings.spare, 0)
+                    self.assertGreaterEqual(settings.spare.first, 0)
 
     def test_a_card_too_small_for_the_weights_yields_nothing(self):
         """Dense is whole on the card or not served: there is no third answer."""
@@ -126,7 +128,7 @@ class NothingOnTheGridWouldHaveBeenBetter(unittest.TestCase):
         law = straight_line(fixed=12000, per_token=0.021)
 
         for card in range(13000, 24001, 250):
-            limits = place.limits_for(Mib(card), RESERVE, MIN_CTX, AMPLE_CTX)
+            limits = place.limits_for(chains(Mib(card), RESERVE), UBATCH, MIN_CTX, AMPLE_CTX)
             chosen, _, _ = run(DENSE_WITH_HEAD, Mib(card), RESERVE, law)
 
             for settings in chosen:
@@ -135,7 +137,7 @@ class NothingOnTheGridWouldHaveBeenBetter(unittest.TestCase):
                            for _, spare in every_point(DENSE_WITH_HEAD, limits,
                                                        variant, law))
                 with self.subTest(card=card, cache=settings.cache, head=settings.head):
-                    self.assertEqual(abs(settings.spare - RESERVE), best)
+                    self.assertEqual(abs(settings.spare.first - RESERVE), best)
 
     def test_the_finest_cache_yields_nothing_only_when_no_point_fits(self):
         """Stated of q8_0 alone: a coarser cache is dropped for its own reasons."""
@@ -143,7 +145,7 @@ class NothingOnTheGridWouldHaveBeenBetter(unittest.TestCase):
         variant = place.Variant(CacheType.Q8_0, head=False)
 
         for card in range(8000, 24001, 250):
-            limits = place.limits_for(Mib(card), RESERVE, MIN_CTX, AMPLE_CTX)
+            limits = place.limits_for(chains(Mib(card), RESERVE), UBATCH, MIN_CTX, AMPLE_CTX)
             chosen, _, _ = run(DENSE, Mib(card), RESERVE, law)
             offered = {(s.cache, s.head) for s in chosen}
 
@@ -156,7 +158,7 @@ class TheSearchIsCheap(unittest.TestCase):
     def test_it_asks_about_a_handful_of_points_not_all_of_them(self):
         """Two ends and a bisection: the log of the grid, not its length."""
         law = straight_line(fixed=12000, per_token=0.021)
-        limits = place.limits_for(CARD, RESERVE, MIN_CTX, AMPLE_CTX)
+        limits = place.limits_for(chains(CARD, RESERVE), UBATCH, MIN_CTX, AMPLE_CTX)
         points = len(place.grid(DENSE_WITH_HEAD, limits))
 
         _, answers, _ = run(DENSE_WITH_HEAD, CARD, RESERVE, law)
@@ -253,7 +255,7 @@ class ARefusalIsNotAnAmount(unittest.TestCase):
 
         self.assertEqual({settings.cache for settings in chosen}, {CacheType.Q8_0})
         for settings in chosen:
-            self.assertGreaterEqual(settings.spare, 0)
+            self.assertGreaterEqual(settings.spare.first, 0)
 
 
 class TheWindowStaysWithinWhatTheModelWasTrainedFor(unittest.TestCase):
@@ -349,7 +351,8 @@ class AWindowTooShortIsNotAProfile(unittest.TestCase):
 
         chosen, _, limits = run(DENSE, Mib(12600), RESERVE, law)
 
-        self.assertGreaterEqual(limits.available, 12000 + round(0.021 * 4096))
+        self.assertGreaterEqual(limits.chains.first.first.available,
+                                12000 + round(0.021 * 4096))
         self.assertEqual(chosen, ())
 
     def test_the_floor_moves_with_the_setting(self):
@@ -546,14 +549,14 @@ class AMixtureKeepsItsWindowAndMovesExperts(unittest.TestCase):
     def test_the_least_offload_that_lands_nearest_is_taken(self):
         """Every step above it moves experts the card had room for into system RAM."""
         law = straight_line(fixed=20000, per_token=0.011, per_offloaded_layer=400)
-        limits = place.limits_for(CARD, RESERVE, MIN_CTX, AMPLE_CTX)
+        limits = place.limits_for(chains(CARD, RESERVE), UBATCH, MIN_CTX, AMPLE_CTX)
 
         chosen, _, _ = run(MIXTURE, CARD, RESERVE, law)
 
         variant = place.variants(MIXTURE, place.EVERYTHING)[0]
         best = min(abs(spare - RESERVE)
                    for _, spare in every_point(MIXTURE, limits, variant, law))
-        self.assertEqual(abs(chosen[0].spare - RESERVE), best)
+        self.assertEqual(abs(chosen[0].spare.first - RESERVE), best)
 
     def test_a_mixture_produces_exactly_one_placement(self):
         law = straight_line(fixed=20000, per_token=0.011, per_offloaded_layer=400)
@@ -586,21 +589,23 @@ class WhatStaysInSystemMemoryIsCountedToo(unittest.TestCase):
         self.assertEqual(Mib(400 * offloaded), place.resident(chosen, answers))
 
     def test_the_heaviest_profile_is_the_one_that_counts(self):
-        light = Question(Tokens(30000), CacheType.Q8_0, WholeCard())
-        heavy = Question(Tokens(60000), CacheType.Q8_0, WholeCard())
-        answers = {light: Needs(card=Mib(9000), host=Mib(600)),
-                   heavy: Needs(card=Mib(12000), host=Mib(4000))}
+        light = Question(Tokens(30000), CacheType.Q8_0, WholeCard(), LAYOUT)
+        heavy = Question(Tokens(60000), CacheType.Q8_0, WholeCard(), LAYOUT)
+        answers = {light: needs(Mib(9000), Mib(600)),
+                   heavy: needs(Mib(12000), Mib(4000))}
 
         chosen = [place.Settings(ctx=question.ctx, cache=question.cache, head=False,
-                                 placement=question.placement, spare=Mib(1000))
+                                 placement=question.placement,
+                                 spare=NonEmpty(Mib(1000)), layout=question.layout)
                   for question in (light, heavy)]
 
         self.assertEqual(Mib(4000), place.resident(chosen, answers))
 
     def test_an_answer_that_is_not_a_requirement_holds_nothing(self):
-        question = Question(Tokens(30000), CacheType.Q8_0, WholeCard())
+        question = Question(Tokens(30000), CacheType.Q8_0, WholeCard(), LAYOUT)
         settings = place.Settings(ctx=question.ctx, cache=question.cache, head=False,
-                                  placement=question.placement, spare=Mib(1000))
+                                  placement=question.placement,
+                                  spare=NonEmpty(Mib(1000)), layout=question.layout)
 
         self.assertEqual(Mib(0), place.resident([settings], {question: Refused()}))
 

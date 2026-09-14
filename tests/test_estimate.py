@@ -11,12 +11,13 @@ accept it.
 import unittest
 
 from cm.estimate import Needs, Refused, parse_requirement
+from cm.nonempty import NonEmpty
 from cm.units import Mib
 
 
 def card(mib: int) -> Needs:
     """A placement that keeps nothing in system memory."""
-    return Needs(card=Mib(mib), host=Mib(0))
+    return Needs(cards=NonEmpty(Mib(mib)), host=Mib(0))
 
 
 class TheRequirementIsAllThreeNumbers(unittest.TestCase):
@@ -42,12 +43,12 @@ class TheHostIsNotTheCard(unittest.TestCase):
         text = "CUDA0 12726 285 509 \nHost 520 0 24\n"
 
         self.assertEqual(parse_requirement(text),
-                         Needs(card=Mib(13520), host=Mib(544)))
+                         Needs(cards=NonEmpty(Mib(13520)), host=Mib(544)))
 
     def test_the_host_is_never_added_to_the_card(self):
         with_host = parse_requirement("CUDA0 100 20 30\nHost 4000 0 0\n")
 
-        self.assertEqual(with_host.card, card(150).card)
+        self.assertEqual(with_host.cards, card(150).cards)
 
     def test_the_order_of_the_lines_does_not_matter(self):
         """The estimator prints the host first for some models and last for others."""
@@ -71,10 +72,11 @@ class TheDeviceMayBeCalledAnything(unittest.TestCase):
             with self.subTest(device=name):
                 self.assertEqual(parse_requirement(f"{name} 100 20 30\n"), card(150))
 
-    def test_the_first_device_line_is_the_answer(self):
+    def test_every_device_line_is_an_answer_in_the_order_printed(self):
         text = "CUDA0 100 20 30\nCUDA1 900 90 9\n"
 
-        self.assertEqual(parse_requirement(text), card(150))
+        self.assertEqual(parse_requirement(text),
+                         Needs(cards=NonEmpty(Mib(150), Mib(999)), host=Mib(0)))
 
 
 class ARefusalIsNotANumber(unittest.TestCase):
@@ -93,7 +95,7 @@ class ARefusalIsNotANumber(unittest.TestCase):
         """Refused has nothing to add up, so no code path can mistake it for a size."""
         refused = parse_requirement("")
 
-        self.assertFalse(hasattr(refused, "card"))
+        self.assertFalse(hasattr(refused, "cards"))
         self.assertFalse(hasattr(refused, "host"))
 
 

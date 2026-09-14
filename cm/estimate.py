@@ -1,9 +1,10 @@
 """What a configuration needs, read out of llama-fit-params' answer.
 
 The estimator prints one line per device -- the device, then model, context and compute
-in MiB. The card's line is what a placement has to fit into. The Host line is the other
-half of the same placement: what stays in system memory, where it competes with the
-prompt cache rather than with the card.
+in MiB. The card lines are what a placement has to fit into, one per device and in the
+order the devices were given. The Host line is the other half of the same placement:
+what stays in system memory, where it competes with the prompt cache rather than with a
+card.
 
 A refusal is its own answer rather than a zero. Zero is a configuration that needs no
 memory, and every comparison downstream would wave it through.
@@ -11,17 +12,18 @@ memory, and every comparison downstream would wave it through.
 
 from dataclasses import dataclass
 
+from .nonempty import NonEmpty
 from .units import Mib
 
-# The device holding what did not go on the card.
+# The device holding what did not go on a card.
 HOST = "Host"
 
 
 @dataclass(frozen=True)
 class Needs:
-    """One placement, on both sides of the bus."""
+    """One placement, on every device it uses and on the host."""
 
-    card: Mib
+    cards: NonEmpty[Mib]
     host: Mib
 
 
@@ -40,11 +42,11 @@ def parse_requirement(text: str) -> Requirement:
     rows = _rows(text)
     host = next((total for device, total in rows if device == HOST), Mib(0))
 
-    for device, total in rows:
-        if device != HOST:
-            return Needs(card=total, host=host)
-
-    return Refused()
+    match tuple(total for device, total in rows if device != HOST):
+        case ():
+            return Refused()
+        case (first, *rest):
+            return Needs(cards=NonEmpty(first, *rest), host=host)
 
 
 def _rows(text: str) -> tuple[tuple[str, Mib], ...]:

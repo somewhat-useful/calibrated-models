@@ -11,6 +11,7 @@ a decision taken on an English word is one that goes wrong on a machine installe
 another; the exit code is the same number everywhere.
 """
 
+import os
 import subprocess
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -25,6 +26,11 @@ from .refusal import Refusal
 _DETACHED_PROCESS = 0x00000008
 _CREATE_NEW_PROCESS_GROUP = 0x00000200
 
+# What every program started from here is run with. CUDA numbers cards fastest first
+# unless told otherwise, and nvidia-smi numbers them by where they sit on the bus: told
+# this, a card placed as CUDA1 is the card nvidia-smi calls 1.
+_ENVIRONMENT = {**os.environ, "CUDA_DEVICE_ORDER": "PCI_BUS_ID"}
+
 
 @dataclass(frozen=True)
 class Output:
@@ -36,7 +42,7 @@ class Output:
 
 
 def run(argv: Sequence[str]) -> Output:
-    done = subprocess.run(list(argv), capture_output=True, text=True)
+    done = subprocess.run(list(argv), capture_output=True, text=True, env=_ENVIRONMENT)
     return Output(out=done.stdout, err=done.stderr, code=done.returncode)
 
 
@@ -60,7 +66,7 @@ def asked(argv: Sequence[str], what: str) -> None:
 
 def attached(argv: Sequence[str], working: Path) -> int:
     """Run a program in this console and wait for it, giving back its exit code."""
-    return subprocess.call(list(argv), cwd=str(working))
+    return subprocess.call(list(argv), cwd=str(working), env=_ENVIRONMENT)
 
 
 def detached(argv: Sequence[str], working: Path, out: Path, err: Path) -> Pid:
@@ -73,6 +79,7 @@ def detached(argv: Sequence[str], working: Path, out: Path, err: Path) -> Pid:
         started = subprocess.Popen(list(argv), cwd=str(working),
                                    stdin=subprocess.DEVNULL,
                                    stdout=stdout, stderr=stderr,
+                                   env=_ENVIRONMENT,
                                    creationflags=(_DETACHED_PROCESS
                                                   | _CREATE_NEW_PROCESS_GROUP))
 

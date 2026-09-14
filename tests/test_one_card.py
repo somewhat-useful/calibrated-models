@@ -14,7 +14,6 @@ from pathlib import Path
 
 from cm import place, render
 from cm.config import DEFAULT_CUDA, DEFAULT_KEPT, DEFAULT_RUNTIME, Config, Model
-from cm.estimate import Needs
 from cm.facts import Head, ModelFacts, NoHead
 from cm.machine import Card, Core, Fitted, Machine, system_memory
 from cm.name import names
@@ -22,6 +21,7 @@ from cm.place import CacheType, ExpertsOnCpu
 from cm.render import Placed
 from cm.serving import DEFAULT_HOST, DEFAULT_IDLE, DEFAULT_PORT, DEFAULT_RESIDENT, Serving
 from cm.units import Layers, Mib, Tokens
+from one_card import UBATCH, chains, installed, needs
 from places import somewhere
 
 MODELS = somewhere("models")
@@ -29,7 +29,7 @@ MODELS = somewhere("models")
 CARD = Mib(16303)
 RESERVE = Mib(1024)
 
-MACHINE = Machine(card=Card("NVIDIA GeForce RTX 5070 Ti", CARD),
+MACHINE = Machine(cards=installed(Card("NVIDIA GeForce RTX 5070 Ti", CARD)),
                   ram=Mib(65407),
                   cores=tuple([Core(1, 2)] * 8 + [Core(0, 1)] * 8))
 
@@ -53,7 +53,7 @@ def law(fixed, per_token, per_offloaded_layer=0):
         if isinstance(question.placement, ExpertsOnCpu):
             needed -= per_offloaded_layer * question.placement.layers
             held = per_offloaded_layer * question.placement.layers
-        return Needs(card=Mib(round(needed)), host=Mib(held))
+        return needs(Mib(round(needed)), Mib(held))
 
     return answer
 
@@ -62,7 +62,8 @@ def placed(key, facts, estimator) -> Placed:
     """One model, asked about until the core stops asking, the way calibrate does it."""
     model = Model(key=key, path=MODELS / f"{key}.gguf", vendor={"temp": "1.0"},
                   allowed=place.EVERYTHING, manual=False)
-    limits = place.limits_for(CARD, RESERVE, Tokens(25000), Tokens(100000))
+    limits = place.limits_for(chains(CARD, RESERVE), UBATCH, Tokens(25000),
+                              Tokens(100000))
 
     answers = {}
     while asking := place.next_questions(facts, model.allowed, limits, answers):

@@ -11,7 +11,8 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from .config import Runtime
-from .place import ExpertsOnCpu, Question
+from .place import (NO_TENSOR, ExpertsOnCpu, Layout, Pipeline, Question, device_name,
+                    micro_batch)
 
 # Every layer on the card, as llama.cpp spells it.
 ALL_LAYERS = "99"
@@ -37,14 +38,42 @@ def argv(binary: Path, model: Path, question: Question,
     """
     return (str(binary), "-m", str(model),
             "-c", str(question.ctx),
-            "-b", str(runtime.batch), "-ub", str(runtime.ubatch),
+            "-b", str(runtime.batch),
+            "-ub", str(micro_batch(runtime.ubatch, question.layout.halvings)),
             "-ctk", question.cache.value, "-ctv", question.cache.value,
             "-fa", runtime.flash_attn,
             "-np", str(runtime.parallel),
-            "--split-mode", "none",
+            *_split(question.layout),
             "--fit", "off", "--fit-print", "on",
             *_placement(question),
             )
+
+
+def _split(layout: Layout) -> Sequence[str]:
+    """Which devices the layers go across.
+
+    One device is told there is no splitting and nothing else, which is all a machine
+    with one card has ever been told. Several are named in the order the layers run
+    through them, each with the count of layers it holds.
+    """
+    if len(layout.devices) == 1:
+        return ("--split-mode", "none")
+
+    return ("--split-mode", "layer",
+            "--device", ",".join(device_name(one) for one in layout.devices),
+            "--tensor-split", ",".join(str(count) for count in layout.layers),
+            *_pipeline(layout))
+
+
+def _pipeline(layout: Layout) -> Sequence[str]:
+    """Nothing where the cards run pieces of a prompt at once, which llama.cpp does by
+    itself; an override that moves nothing where they do not, since any override at all
+    is what turns it off."""
+    match layout.pipeline:
+        case Pipeline.ON:
+            return ()
+        case Pipeline.OFF:
+            return ("-ot", f"{NO_TENSOR}={device_name(layout.devices.first)}")
 
 
 def _placement(question: Question) -> Sequence[str]:

@@ -1,4 +1,4 @@
-"""Where a model sits on this machine's card.
+"""Where a model sits on this machine's cards.
 
 Nothing here starts a process or reads a device. The core says which configuration it
 wants the estimator asked about next, and decides once the answers come back; cli.py does
@@ -25,15 +25,21 @@ the only thing about the shape of that curve worth relying on: fitting a straigh
 through two points was tried and it lied by three thousand tokens, because the compute
 buffers hold flat over most of the range and jump near the end. Every step of the search
 is half a second of arithmetic that loads nothing, and calibration is rare.
+
+Everything about the cards is a list with an element per device, and a machine with one
+card is the list with one element in it. There is one way through this module whatever
+the length.
 """
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 
-from .estimate import Needs, Requirement
+from .estimate import Needs, Refused, Requirement
 from .facts import Head, ModelFacts
-from .units import Layers, Mib, Tokens
+from .machine import CudaIndex
+from .nonempty import NonEmpty
+from .units import Halvings, Layers, Mib, Tokens
 
 # Video memory the CUDA driver holds before a single tensor is placed. It appears in no
 # log the loader writes and belongs to the driver rather than to any model, so it is
@@ -57,6 +63,12 @@ MIXTURE_WINDOW = Tokens(131000)
 # Video memory to leave for everything that is not a model, unless the settings file
 # says otherwise. A target to land near rather than a line to clear.
 DEFAULT_RESERVE = Mib(1024)
+
+# The least any device is left for the system that drives it, whatever the settings file
+# asks. Windows keeps part of every card to itself, a desktop or not; tens of megabytes
+# either way make no difference, and a model that fails to allocate is lost outright.
+# A target like any reserve, not a line.
+WINDOWS_SHARE = Mib(1024)
 
 # Shortest window worth writing out, unless the settings file says otherwise. Below some
 # such length a window stops being useful, but where exactly is a judgement about the
@@ -108,6 +120,53 @@ Placement = WholeCard | ExpertsOnCpu
 
 
 @dataclass(frozen=True)
+class Local:
+    """A card in this machine: the number llama.cpp knows it by, and how much it has."""
+
+    index: CudaIndex
+    total: Mib
+
+
+Device = Local
+
+
+# A tensor name nothing in a model is called. Telling llama.cpp where to put it moves
+# nothing, and any such override at all is what turns its pipeline parallelism off.
+NO_TENSOR = "no-tensor-is-called-this"
+
+
+class Pipeline(Enum):
+    """Whether consecutive pieces of a prompt are processed on several cards at once.
+
+    llama.cpp does it by itself on two local cards or more, and pays for it with extra
+    copies of the working buffers on every card. On one card there is nothing to run at
+    once, so a single card is always OFF.
+    """
+
+    ON = "on"
+    OFF = "off"
+
+
+@dataclass(frozen=True)
+class Layout:
+    """Where the layers of one configuration go, and the micro-batch they run at.
+
+    layers counts per device the way the loader counts: the model's blocks, and on the
+    last device also the output and a prediction head's block. The last device is the one
+    that carries both.
+    """
+
+    devices: NonEmpty[Device]
+    layers: NonEmpty[Layers]
+    halvings: Halvings
+    pipeline: Pipeline
+
+    def __post_init__(self) -> None:
+        if len(self.devices) != len(self.layers):
+            raise ValueError("a layout names a count of layers for every device it uses")
+
+
+@dataclass(frozen=True)
 class Question:
     """A configuration to ask the estimator about.
 
@@ -118,6 +177,15 @@ class Question:
 
     ctx: Tokens
     cache: CacheType
+    placement: Placement
+    layout: Layout
+
+
+@dataclass(frozen=True)
+class Point:
+    """One setting of a model's lever: the window, and where its experts are."""
+
+    ctx: Tokens
     placement: Placement
 
 
@@ -151,48 +219,82 @@ EVERYTHING = Allowed(caches=frozenset({CacheType.Q8_0, CacheType.Q4_0}), head=Tr
 
 
 @dataclass(frozen=True)
-class Limits:
-    """What a placement may spend, what it should leave, and what is worth having.
+class Seat:
+    """One device a placement may use: which it is, what it may hold, what to leave.
 
     available is a bound: past it a model does not run slowly, it fails to allocate.
     reserve is a target, and missing it from either side is the same miss.
-    min_ctx is the human's call about how short a window stops being useful, and
-    ample_ctx about how long a window stops wanting a coarser cache to lengthen it.
     """
 
+    device: Device
     available: Mib
     reserve: Mib
+
+
+# The devices one placement runs across, in the order it runs through them.
+Chain = NonEmpty[Seat]
+
+
+@dataclass(frozen=True)
+class Limits:
+    """What placements may spend, what is worth having, and what they run with.
+
+    Every chain is placed on its own and yields profiles of its own. ubatch is the
+    micro-batch the settings file runs with; min_ctx is the human's call about how short
+    a window stops being useful, and ample_ctx about how long a window stops wanting a
+    coarser cache to lengthen it.
+    """
+
+    chains: NonEmpty[Chain]
+    ubatch: int
     min_ctx: Tokens
     ample_ctx: Tokens
 
 
 @dataclass(frozen=True)
 class Settings:
-    """One way to run one model on this card."""
+    """One way to run one model across one chain of devices."""
 
     ctx: Tokens
     cache: CacheType
     head: bool
     placement: Placement
-    spare: Mib
+    spare: NonEmpty[Mib]
+    layout: Layout
 
 
-def limits_for(card_total: Mib, reserve: Mib, min_ctx: Tokens,
+def local_seat(index: CudaIndex, total: Mib, reserve: Mib) -> Seat:
+    """A card in this machine, with what the driver keeps taken off the top."""
+    return Seat(device=Local(index, total),
+                available=Mib(total - DRIVER_CONTEXT),
+                reserve=Mib(max(reserve, WINDOWS_SHARE)))
+
+
+def limits_for(chains: NonEmpty[Chain], ubatch: int, min_ctx: Tokens,
                ample_ctx: Tokens) -> Limits:
-    return Limits(available=Mib(card_total - DRIVER_CONTEXT),
-                  reserve=reserve,
-                  min_ctx=min_ctx,
-                  ample_ctx=ample_ctx)
+    return Limits(chains=chains, ubatch=ubatch, min_ctx=min_ctx, ample_ctx=ample_ctx)
 
 
-def holds(card_total: Mib, settings: Settings) -> Mib:
-    """The video memory this placement holds on the card once it is loaded.
+def holds(settings: Settings) -> NonEmpty[Mib]:
+    """The video memory this placement holds on each device once it is loaded.
 
     The other side of `spare`: everything the placement counted, plus the driver's own
     context. This is the figure a free-memory reading has to be compared against, and
     the one written into the preset for `vram` to read back.
     """
-    return Mib(card_total - settings.spare)
+    held = [Mib(device.total - spare)
+            for device, spare in zip(settings.layout.devices, settings.spare)]
+    return NonEmpty(*held)
+
+
+def micro_batch(ubatch: int, halvings: Halvings) -> int:
+    """The micro-batch a layout runs at, out of the one the settings file runs with."""
+    return ubatch >> halvings
+
+
+def device_name(device: Device) -> str:
+    """What llama.cpp calls the device on its command line."""
+    return f"CUDA{device.index}"
 
 
 def head_cost(facts: ModelFacts, cache: CacheType, ctx: Tokens) -> Mib:
@@ -208,11 +310,16 @@ def head_cost(facts: ModelFacts, cache: CacheType, ctx: Tokens) -> Mib:
 
 
 def requirement(facts: ModelFacts, variant: Variant, ctx: Tokens,
-                answer: Needs) -> Mib:
-    """What the estimator counted, plus what it was never told to count."""
+                answer: Needs) -> NonEmpty[Mib]:
+    """What the estimator counted on each device, plus what it was never told to count.
+
+    The head is the last layer of the model, so it is counted on the last device.
+    """
     if not variant.head:
-        return answer.card
-    return Mib(answer.card + head_cost(facts, variant.cache, ctx))
+        return answer.cards
+
+    *before, last = answer.cards
+    return NonEmpty(*before, Mib(last + head_cost(facts, variant.cache, ctx)))
 
 
 def _ceiling(facts: ModelFacts) -> Tokens:
@@ -256,8 +363,8 @@ def variants(facts: ModelFacts, allowed: Allowed) -> tuple[Variant, ...]:
     return tuple(Variant(cache, head) for cache in caches for head in heads)
 
 
-def grid(facts: ModelFacts, limits: Limits) -> tuple[Question, ...]:
-    """Every configuration the lever can be set to, ordered by falling spare.
+def grid(facts: ModelFacts, limits: Limits) -> tuple[Point, ...]:
+    """Every setting the lever can be put at, ordered by falling spare.
 
     First entry leaves the card the most, last the least. That is the only property the
     search relies on, and it holds for both levers: a longer window costs more, and an
@@ -266,72 +373,114 @@ def grid(facts: ModelFacts, limits: Limits) -> tuple[Question, ...]:
     if facts.n_expert > 0:
         # A model trained for less is asked for what it knows, on the same page.
         window = Tokens(min(_ceiling(facts), MIXTURE_WINDOW))
-        return tuple(
-            Question(window, CacheType.Q8_0, ExpertsOnCpu(Layers(offloaded)))
-            for offloaded in range(facts.n_layer, -1, -1)
-        )
+        return tuple(Point(window, ExpertsOnCpu(Layers(offloaded)))
+                     for offloaded in range(facts.n_layer, -1, -1))
 
     floor = _floor(facts, limits)
     windows = range(floor, _ceiling(facts) + 1, PAGE)
 
-    return tuple(Question(Tokens(window), CacheType.Q8_0, WholeCard())
-                 for window in windows)
+    return tuple(Point(Tokens(window), WholeCard()) for window in windows)
 
 
-def _for_variant(question: Question, variant: Variant) -> Question:
-    """The same point on the grid, asked at this variant's cache precision."""
-    return Question(question.ctx, variant.cache, question.placement)
+def _trailing(facts: ModelFacts) -> Layers:
+    """The layers the loader counts after the model's blocks: the output, and the head's
+    own block where the file carries one. Both go on the last device."""
+    return Layers(1 + (1 if isinstance(facts.head, Head) else 0))
 
 
-def _spare(limits: Limits, needed: Mib) -> Mib:
-    return Mib(limits.available - needed)
+@dataclass(frozen=True)
+class _Search:
+    """One search along the lever: a variant, on a chain, at a micro-batch."""
+
+    variant: Variant
+    chain: Chain
+    layout: Layout
 
 
-def _miss(limits: Limits, needed: Mib) -> int:
-    return abs(_spare(limits, needed) - limits.reserve)
+def _searches(facts: ModelFacts, allowed: Allowed,
+              limits: Limits) -> tuple[_Search, ...]:
+    """Every search the placements are settled by, chain by chain."""
+    found = []
+    for chain in limits.chains:
+        layout = Layout(devices=chain.map(lambda seat: seat.device),
+                        layers=NonEmpty(Layers(facts.n_layer + _trailing(facts))),
+                        halvings=Halvings(0),
+                        pipeline=Pipeline.OFF)
+        found.extend(_Search(variant, chain, layout)
+                     for variant in variants(facts, allowed))
+
+    return tuple(found)
 
 
 @dataclass(frozen=True)
 class _Known:
-    """What the answers say about one point of one variant's grid."""
+    """What the answers say about one point of one search."""
 
-    needed: Mib
+    needed: NonEmpty[Mib]
+    spare: NonEmpty[Mib]
     fits: bool
     clears_reserve: bool
+    # How far the placement lands from the reserve, from either side.
+    miss: int
 
 
-def _known_at(facts: ModelFacts, limits: Limits, variant: Variant,
-              grid: Sequence[Question], index: int,
-              answers: Mapping[Question, Requirement]) -> _Known | None:
-    answer = answers.get(_for_variant(grid[index], variant))
-    if not isinstance(answer, Needs):
-        return None
+@dataclass(frozen=True)
+class _Ask:
+    question: Question
 
-    needed = requirement(facts, variant, grid[index].ctx, answer)
+
+@dataclass(frozen=True)
+class _Unanswerable:
+    """The estimator would not answer for a point the search needs, so this search
+    settles nothing. It is arithmetic, and asking again gets the same refusal."""
+
+
+def _known_at(facts: ModelFacts, search: _Search, points: Sequence[Point], index: int,
+              answers: Mapping[Question, Requirement]) -> _Known | _Ask | _Unanswerable:
+    point = points[index]
+    question = Question(point.ctx, search.variant.cache, point.placement, search.layout)
+    if question not in answers:
+        return _Ask(question)
+
+    match answers[question]:
+        case Refused():
+            return _Unanswerable()
+        case Needs() as answer if len(answer.cards) != len(search.chain):
+            # An answer about other devices than the ones asked about is no answer.
+            return _Unanswerable()
+        case Needs() as answer:
+            needed = requirement(facts, search.variant, point.ctx, answer)
+
+    spare = NonEmpty(*(Mib(seat.available - need)
+                       for seat, need in zip(search.chain, needed)))
+    gap = spare.first - search.chain.first.reserve
+
     return _Known(needed=needed,
-                  fits=_spare(limits, needed) >= 0,
-                  clears_reserve=_spare(limits, needed) >= limits.reserve)
+                  spare=spare,
+                  fits=all(one >= 0 for one in spare),
+                  clears_reserve=gap >= 0,
+                  miss=abs(gap))
 
 
 def next_questions(facts: ModelFacts, allowed: Allowed, limits: Limits,
                    answers: Mapping[Question, Requirement]) -> tuple[Question, ...]:
     """What the estimator should be asked next. Empty when there is nothing left to ask.
 
-    Every variant that has not finished contributes one question, so a round of asking
-    costs one pass whatever the file. A refusal ends that variant's search rather than
-    being retried: the estimator is arithmetic and gives the same answer twice.
+    Every search that has not finished contributes one question, so a round of asking
+    costs one pass whatever the file. A refusal ends that search rather than being
+    retried: the estimator is arithmetic and gives the same answer twice.
     """
     points = grid(facts, limits)
     if not points:
         return ()
 
     wanted: list[Question] = []
-    for variant in variants(facts, allowed):
-        step = _step(facts, limits, variant, points, answers)
-        if isinstance(step, _Ask):
-            question = _for_variant(points[step.index], variant)
-            if question not in wanted and question not in answers:
+    for search in _searches(facts, allowed, limits):
+        match _step(facts, search, points, answers):
+            case _Ask(question) if question not in wanted and question not in answers:
                 wanted.append(question)
+            case _Ask() | _Settled() | _Hopeless() | _Unanswerable():
+                pass
 
     return tuple(wanted)
 
@@ -345,21 +494,29 @@ def settings(facts: ModelFacts, allowed: Allowed, limits: Limits,
     describing a placement that does not fit.
     """
     points = grid(facts, limits)
-    chosen = []
+    if not points:
+        return ()
 
-    for variant in variants(facts, allowed):
-        step = _step(facts, limits, variant, points, answers)
-        if not isinstance(step, _Settled):
-            continue
+    kept: list[Settings] = []
+    for chain in limits.chains:
+        chosen = []
+        for search in _searches(facts, allowed, limits):
+            if search.chain != chain:
+                continue
+            match _step(facts, search, points, answers):
+                case _Settled(index, known):
+                    chosen.append(Settings(ctx=points[index].ctx,
+                                           cache=search.variant.cache,
+                                           head=search.variant.head,
+                                           placement=points[index].placement,
+                                           spare=known.spare,
+                                           layout=search.layout))
+                case _Ask() | _Hopeless() | _Unanswerable():
+                    pass
 
-        question = points[step.index]
-        chosen.append(Settings(ctx=question.ctx,
-                               cache=variant.cache,
-                               head=variant.head,
-                               placement=question.placement,
-                               spare=_spare(limits, step.needed)))
+        kept.extend(_worth_offering(chosen, limits))
 
-    return _worth_offering(chosen, limits)
+    return tuple(kept)
 
 
 def resident(chosen: Sequence[Settings],
@@ -369,17 +526,22 @@ def resident(chosen: Sequence[Settings],
     The router holds one model at a time, so the heaviest placement is the one the
     prompt cache has to leave room for, and the others cost nothing while it is loaded.
 
-    A placement names the question it was settled by -- the window, the cache and where
-    the experts went are the question -- so the answer is looked up rather than carried
-    around. An answer that is not a requirement contributes nothing: no placement was
-    ever settled on one.
+    A placement names the question it was settled by -- the window, the cache, where
+    the experts went and where the layers went are the question -- so the answer is
+    looked up rather than carried around. An answer that is not a requirement
+    contributes nothing: no placement was ever settled on one.
     """
     most = 0
     for settings in chosen:
-        answer = answers.get(Question(settings.ctx, settings.cache,
-                                      settings.placement))
-        if isinstance(answer, Needs):
-            most = max(most, answer.host)
+        question = Question(settings.ctx, settings.cache, settings.placement,
+                            settings.layout)
+        if question not in answers:
+            continue
+        match answers[question]:
+            case Needs(_, host):
+                most = max(most, host)
+            case Refused():
+                pass
 
     return Mib(most)
 
@@ -410,28 +572,22 @@ def _worth_offering(chosen: list[Settings], limits: Limits) -> tuple[Settings, .
 
 
 @dataclass(frozen=True)
-class _Ask:
-    index: int
-
-
-@dataclass(frozen=True)
 class _Settled:
     index: int
-    needed: Mib
+    known: _Known
 
 
 @dataclass(frozen=True)
 class _Hopeless:
-    """Not one point of this variant's grid fits on the card."""
+    """Not one point of this search fits on the card."""
 
 
-_Step = _Ask | _Settled | _Hopeless
+_Step = _Ask | _Settled | _Hopeless | _Unanswerable
 
 
-def _step(facts: ModelFacts, limits: Limits, variant: Variant,
-          points: Sequence[Question],
+def _step(facts: ModelFacts, search: _Search, points: Sequence[Point],
           answers: Mapping[Question, Requirement]) -> _Step:
-    """Where one variant's search stands: what to ask next, or what it settled on.
+    """Where one search stands: what to ask next, or what it settled on.
 
     Pure in the answers, so the same table always gives the same step and the search can
     be resumed, replayed or tested without anything to hold on to between calls.
@@ -443,49 +599,51 @@ def _step(facts: ModelFacts, limits: Limits, variant: Variant,
     """
     last = len(points) - 1
 
-    generous = _known_at(facts, limits, variant, points, last, answers)
-    if generous is None:
-        return _Ask(last)
-    if generous.clears_reserve:
-        # Even the most this lever can be asked for leaves the reserve behind: there is
-        # nothing to trade and no reason to look further.
-        return _Settled(last, generous.needed)
+    match _known_at(facts, search, points, last, answers):
+        case _Ask() | _Unanswerable() as waiting:
+            return waiting
+        case _Known() as generous if generous.clears_reserve:
+            # Even the most this lever can be asked for leaves the reserve behind: there
+            # is nothing to trade and no reason to look further.
+            return _Settled(last, generous)
+        case _Known() as generous:
+            pass
 
-    frugal = _known_at(facts, limits, variant, points, 0, answers)
-    if frugal is None:
-        return _Ask(0)
-    if not frugal.fits:
-        return _Hopeless()
-    if not frugal.clears_reserve:
-        # Nowhere on the grid is the reserve reached, so the point leaving the most is
-        # the nearest to it that fits.
-        return _Settled(0, frugal.needed)
+    match _known_at(facts, search, points, 0, answers):
+        case _Ask() | _Unanswerable() as waiting:
+            return waiting
+        case _Known() as frugal if not frugal.fits:
+            return _Hopeless()
+        case _Known() as frugal if not frugal.clears_reserve:
+            # Nowhere on the grid is the reserve reached, so the point leaving the most
+            # is the nearest to it that fits.
+            return _Settled(0, frugal)
+        case _Known() as frugal:
+            pass
 
-    low, high = 0, last
+    low, under, high, over = 0, frugal, last, generous
     while high - low > 1:
         middle = (low + high) // 2
-        known = _known_at(facts, limits, variant, points, middle, answers)
-        if known is None:
-            return _Ask(middle)
-        low, high = (middle, high) if known.clears_reserve else (low, middle)
+        match _known_at(facts, search, points, middle, answers):
+            case _Ask() | _Unanswerable() as waiting:
+                return waiting
+            case _Known() as known if known.clears_reserve:
+                low, under = middle, known
+            case _Known() as known:
+                high, over = middle, known
 
-    return _nearer(facts, limits, variant, points, low, high, answers)
+    return _nearer(low, under, high, over)
 
 
-def _nearer(facts: ModelFacts, limits: Limits, variant: Variant,
-            points: Sequence[Question], low: int, high: int,
-            answers: Mapping[Question, Requirement]) -> _Step:
+def _nearer(low: int, under: _Known, high: int, over: _Known) -> _Settled:
     """Of the pair the reserve falls between, the one that misses it by less.
 
     The reserve is a target rather than a boundary, so the point just past it is a
     candidate exactly like the one just short of it. The card is a boundary, so a point
     overrunning it is not a candidate at any distance.
     """
-    under = _known_at(facts, limits, variant, points, low, answers)
-    over = _known_at(facts, limits, variant, points, high, answers)
-
-    if over is None or not over.fits:
-        return _Settled(low, under.needed)
-    if _miss(limits, over.needed) < _miss(limits, under.needed):
-        return _Settled(high, over.needed)
-    return _Settled(low, under.needed)
+    if not over.fits:
+        return _Settled(low, under)
+    if over.miss < under.miss:
+        return _Settled(high, over)
+    return _Settled(low, under)

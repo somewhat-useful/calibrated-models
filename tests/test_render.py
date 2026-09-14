@@ -14,17 +14,19 @@ from cm.config import (DEFAULT_CUDA, DEFAULT_KEPT, DEFAULT_RUNTIME, Config,
                        ConfigError, Model)
 from cm.machine import Card, Core, Fitted, Machine, system_memory, threads
 from cm.name import names
+from cm.nonempty import NonEmpty
 from cm.place import CacheType, ExpertsOnCpu, Settings, WholeCard
 from cm.render import REQUIRED, Placed, preset
 from cm.serving import (DEFAULT_HOST, DEFAULT_IDLE, DEFAULT_PORT,
                         DEFAULT_RESIDENT, Serving)
 from cm.units import Layers, Mib, Tokens
+from one_card import LAYOUT, installed
 from places import somewhere
 
 MODELS = somewhere("models")
 LLAMACPP = somewhere("llama.cpp")
 
-MACHINE = Machine(card=Card("NVIDIA GeForce RTX 5070 Ti", Mib(16303)),
+MACHINE = Machine(cards=installed(Card("NVIDIA GeForce RTX 5070 Ti", Mib(16303))),
                   ram=Mib(65407),
                   cores=tuple([Core(1, 2)] * 8 + [Core(0, 1)] * 8))
 
@@ -68,7 +70,8 @@ def settings(ctx, cache=CacheType.Q8_0, head=False, placement=None,
                     cache=cache,
                     head=head,
                     placement=placement or WholeCard(),
-                    spare=Mib(spare))
+                    spare=NonEmpty(Mib(spare)),
+                    layout=LAYOUT)
 
 
 def placed(key, *chosen, vendor=None, resident=0) -> Placed:

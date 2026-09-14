@@ -11,6 +11,7 @@ from cm.machine import (SYSTEM_SHARE, Card, Core, Fitted, Fixed, Machine,
                         Share, SystemMemory, UnreadableDevice,
                         parse_occupancy, system_memory, threads)
 from cm.units import Mib
+from one_card import installed
 
 # What the two machines the reference file was written for report.
 DESKTOP = tuple([Core(1, 2)] * 8 + [Core(0, 1)] * 8)      # i7-13700F, 8P + 8E
@@ -21,7 +22,7 @@ NO_HYBRID = tuple([Core(0, 2)] * 6                        # one class, hyperthre
 
 def machine(ram: int) -> Machine:
     """A machine of a given size. Nothing here depends on its card."""
-    return Machine(card=Card("test", Mib(16303)), ram=Mib(ram), cores=DESKTOP)
+    return Machine(cards=installed(Card("test", Mib(16303))), ram=Mib(ram), cores=DESKTOP)
 
 
 THIS_ONE = machine(65407)
@@ -152,19 +153,20 @@ class TheCardIsReadOffTheLineNvidiaSmiPrints(unittest.TestCase):
     def test_the_three_fields_are_told_apart(self):
         given = parse_occupancy(self.LINE)
 
-        self.assertEqual("NVIDIA GeForce RTX 5070 Ti", given.card.name)
-        self.assertEqual(Mib(16303), given.card.total)
-        self.assertEqual(Mib(13501), given.free)
+        self.assertEqual("NVIDIA GeForce RTX 5070 Ti", given.first.card.name)
+        self.assertEqual(Mib(16303), given.first.card.total)
+        self.assertEqual(Mib(13501), given.first.free)
 
     def test_a_name_with_a_comma_in_it_does_not_become_a_number(self):
         """Not the whole line split on commas: a card is named, not counted."""
         with self.assertRaises(UnreadableDevice):
             parse_occupancy("16303, 13501, Some, Card\n")
 
-    def test_the_first_card_is_the_one_placed_on(self):
+    def test_every_card_is_read_in_the_order_printed(self):
         two = self.LINE + "8192, 8000, NVIDIA GeForce GTX 1080\n"
 
-        self.assertEqual(Mib(16303), parse_occupancy(two).card.total)
+        self.assertEqual([Mib(16303), Mib(8192)],
+                         [one.card.total for one in parse_occupancy(two)])
 
     def test_a_driver_that_says_nothing_useful_is_refused(self):
         for text in ("", "\n", "no devices were found\n",
@@ -185,7 +187,7 @@ class TheCardIsReadOffTheLineNvidiaSmiPrints(unittest.TestCase):
 class AMachineHasCores(unittest.TestCase):
     def test_one_without_them_cannot_be_built(self):
         with self.assertRaises(ValueError):
-            Machine(card=Card("test", Mib(16303)), ram=Mib(65407), cores=())
+            Machine(cards=installed(Card("test", Mib(16303))), ram=Mib(65407), cores=())
 
 
 if __name__ == "__main__":

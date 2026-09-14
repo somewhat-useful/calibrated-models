@@ -16,16 +16,18 @@ from cm.config import (DEFAULT_CUDA, DEFAULT_KEPT, DEFAULT_RUNTIME, Config,
                        ConfigError, Model)
 from cm.machine import (Card, Core, Fitted, Machine, system_memory)
 from cm.name import names
+from cm.nonempty import NonEmpty
 from cm.place import CacheType, ExpertsOnCpu, Settings, WholeCard
 from cm.render import Placed, preset
 from cm.serving import (DEFAULT_HOST, DEFAULT_IDLE, DEFAULT_PORT,
                         DEFAULT_RESIDENT, Serving)
 from cm.units import Layers, Mib, Tokens
+from one_card import LAYOUT, installed
 from places import somewhere
 
 MODELS = somewhere("models")
 
-MACHINE = Machine(card=Card("NVIDIA GeForce RTX 5070 Ti", Mib(16303)),
+MACHINE = Machine(cards=installed(Card("NVIDIA GeForce RTX 5070 Ti", Mib(16303))),
                   ram=Mib(65407),
                   cores=tuple([Core(1, 2)] * 8 + [Core(0, 1)] * 8))
 
@@ -89,7 +91,8 @@ def config() -> Config:
 def settings(ctx, cache=CacheType.Q8_0, head=False, placement=None,
              spare=1024) -> Settings:
     return Settings(ctx=Tokens(ctx), cache=cache, head=head,
-                    placement=placement or WholeCard(), spare=Mib(spare))
+                    placement=placement or WholeCard(), spare=NonEmpty(Mib(spare)),
+                    layout=LAYOUT)
 
 
 def placed(key, *chosen) -> Placed:

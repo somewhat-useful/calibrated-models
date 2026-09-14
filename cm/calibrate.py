@@ -17,6 +17,7 @@ from .estimate import parse_requirement
 from .facts import parse_facts
 from .machine import UnreadableDevice, system_memory
 from .name import names
+from .nonempty import NonEmpty
 from .place import Limits
 from .render import Placed
 from .units import Mib
@@ -57,10 +58,12 @@ def _calibrate(settings: Path) -> None:
 
     estimator = _estimator(workspace.engines())
     machine = devices.probe()
-    limits = place.limits_for(machine.card.total, read.reserve,
+    first = machine.cards.first
+    seat = place.local_seat(first.index, first.card.total, read.reserve)
+    limits = place.limits_for(NonEmpty(NonEmpty(seat)), read.runtime.ubatch,
                               read.min_ctx, read.ample_ctx)
 
-    print(report.opening(machine.card, limits.available, limits.reserve))
+    print(report.opening(first.card, seat.available, seat.reserve))
     print()
 
     placed = []

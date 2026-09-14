@@ -11,13 +11,14 @@ from cm.config import DEFAULT_RUNTIME, Runtime
 from cm.invoke import argv, facts_argv
 from cm.place import CacheType, ExpertsOnCpu, Question, WholeCard
 from cm.units import Layers, Tokens
+from one_card import LAYOUT
 from places import somewhere
 
 BINARY = somewhere("llama.cpp", "b10448-cuda13.3", "llama-fit-params.exe")
 MODEL = somewhere("models", "unsloth", "Qwen3.8.gguf")
 
-WHOLE = Question(Tokens(45000), CacheType.Q8_0, WholeCard())
-OFFLOADED = Question(Tokens(131000), CacheType.Q8_0, ExpertsOnCpu(Layers(15)))
+WHOLE = Question(Tokens(45000), CacheType.Q8_0, WholeCard(), LAYOUT)
+OFFLOADED = Question(Tokens(131000), CacheType.Q8_0, ExpertsOnCpu(Layers(15)), LAYOUT)
 
 
 def after(flag, line):
@@ -36,7 +37,7 @@ class TheQuestionIsWhatIsAsked(unittest.TestCase):
     def test_both_halves_of_the_cache_are_the_questions_own(self):
         for cache in CacheType:
             with self.subTest(cache=cache):
-                question = Question(Tokens(45000), cache, WholeCard())
+                question = Question(Tokens(45000), cache, WholeCard(), LAYOUT)
                 line = argv(BINARY, MODEL, question, DEFAULT_RUNTIME)
 
                 self.assertEqual(cache.value, after("-ctk", line))

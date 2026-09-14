@@ -148,7 +148,7 @@ def _watch(settings: Path) -> None:
     ours = Pid(os.getpid())
 
     running = session.running()
-    chosen = screen.opens_on(desktop.available(devices.occupancy().free, running),
+    chosen = screen.opens_on(desktop.available(devices.occupancy().first.free, running),
                              offered)
 
     at = 0
@@ -157,7 +157,7 @@ def _watch(settings: Path) -> None:
 
     while True:
         running = session.running()
-        occupancy = devices.occupancy()
+        occupancy = devices.occupancy().first
         holders = desktop.holders(running, ours)
         available = desktop.available(occupancy.free, running)
 

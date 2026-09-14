@@ -9,6 +9,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from .machine import Card, SystemMemory
+from .nonempty import NonEmpty
 from .place import ExpertsOnCpu
 from .render import Placed
 from .units import Mib
@@ -50,7 +51,15 @@ def _profile(profile) -> str:
                if isinstance(settings.placement, ExpertsOnCpu) else "")
 
     return (f"{profile.name:<26} {settings.ctx:>7} tokens  "
-            f"{settings.cache.value}  {settings.spare:>5} MiB free{offload}")
+            f"{settings.cache.value}  {_free(settings.spare)} MiB free{offload}")
+
+
+def _free(spare: NonEmpty[Mib]) -> str:
+    """What a placement leaves free: one figure for one device, one per device in order
+    for several."""
+    if len(spare) == 1:
+        return f"{spare.first:>5}"
+    return "/".join(str(one) for one in spare)
 
 
 def closing(path: Path, placed: Sequence[Placed]) -> str:

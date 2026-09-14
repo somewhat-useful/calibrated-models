@@ -12,10 +12,12 @@ from cm import place
 from cm.config import Model
 from cm.machine import Card, SystemMemory
 from cm.name import names
+from cm.nonempty import NonEmpty
 from cm.place import CacheType, ExpertsOnCpu, Settings, WholeCard
 from cm.render import Placed
 from cm.report import about, closing, opening, system
 from cm.units import Layers, Mib, Tokens
+from one_card import LAYOUT
 from places import somewhere
 
 MODELS = somewhere("models")
@@ -34,7 +36,8 @@ def model(key) -> Model:
 def settings(ctx=45000, cache=CacheType.Q8_0, head=False,
              placement=WholeCard(), spare=1027) -> Settings:
     return Settings(ctx=Tokens(ctx), cache=cache, head=head,
-                    placement=placement, spare=Mib(spare))
+                    placement=placement, spare=NonEmpty(Mib(spare)),
+                    layout=LAYOUT)
 
 
 def placed(key, chosen, resident=0) -> Placed:

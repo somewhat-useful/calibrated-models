@@ -14,8 +14,9 @@ from pathlib import Path
 
 from . import lmstudio
 from .lmstudio import Found, Library, Missing
-from .machine import (Core, Machine, Occupancy, UnreadableDevice,
-                      parse_occupancy)
+from .machine import (CARD_FIELDS, Core, Installed, Machine, Occupancy, UnreadableDevice,
+                      parse_cards, parse_occupancy)
+from .nonempty import NonEmpty
 from .proc import run
 from .units import Mib
 
@@ -34,12 +35,12 @@ _GROUP_SIZE = 16
 
 
 def probe() -> Machine:
-    """This machine: its card, its memory, and its cores."""
+    """This machine: its cards, its memory, and its cores."""
     if sys.platform != "win32":
         raise UnreadableDevice(
             f"reading this machine is implemented for Windows only, not {sys.platform}")
 
-    return Machine(card=occupancy().card, ram=_ram(), cores=_cores())
+    return Machine(cards=cards(), ram=_ram(), cores=_cores())
 
 
 def library() -> Library:
@@ -68,8 +69,18 @@ def _text(path: Path) -> str:
         return ""
 
 
-def occupancy() -> Occupancy:
-    """The card and how much of it is free at this moment."""
+def cards() -> NonEmpty[Installed]:
+    """Every card in this machine, as a placement needs to know it."""
+    done = run(("nvidia-smi", f"--query-gpu={CARD_FIELDS}",
+                "--format=csv,noheader,nounits"))
+    if not done.out.strip():
+        raise UnreadableDevice(f"nvidia-smi said nothing: {done.err.strip()!r}")
+
+    return parse_cards(done.out)
+
+
+def occupancy() -> NonEmpty[Occupancy]:
+    """Every card and how much of it is free at this moment."""
     done = run(("nvidia-smi", "--query-gpu=memory.total,memory.free,name",
                 "--format=csv,noheader,nounits"))
     if not done.out.strip():
