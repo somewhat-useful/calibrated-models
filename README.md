@@ -567,6 +567,12 @@ NVIDIA GeForce RTX 4080 SUPER   16376 MiB   in use 13996   free 2380
   [tab] next model   [shift-tab] back   [space] mark   [enter] close marked   [r] refresh   [q] quit
 ```
 
+The card is the one a desktop is drawn on, since what holds any other is nothing a person
+closes a window to give back: a machine's only card, or of several the one with a monitor
+plugged in. Each profile's figure is what it holds on that card -- nothing, for a profile
+that does not use it -- and each program's is what it holds there. Where several cards
+have monitors plugged in, or none of several has, `vram` says so and stops.
+
 The first line is the card. The second is there only while the router is holding a model:
 that memory comes back the moment it is asked for a different one, so what a profile has
 to fit into is the free memory plus what the router is holding -- `11930` here, and that
@@ -637,10 +643,10 @@ file — and a machine serving one card has no reason to name any of them.
 
 | key | what it decides |
 |---|---|
-| `reserve_mib` | video memory to leave for everything that is not a model, on a machine with one card |
-| `reserve_multi_gpu_mib` | the same where the machine has several, on each card that drives a monitor. 2048 |
+| `reserve_mib` | video memory to leave for everything that is not a model, on a card a profile runs alone |
+| `reserve_multi_gpu_mib` | the same on each card that drives a monitor, in a profile across several cards. 2048 |
 | `min_ctx_tokens` | below which a window stops being worth serving |
-| `ample_ctx_tokens` | past which a coarser attention cache buys nothing worth having |
+| `ample_ctx_tokens` | past which a coarser attention cache buys nothing worth having on a card alone |
 | `cache_ram` | how much system memory the prompt cache may hold |
 
 `cache_ram` is written the way anyone would write it — `32`, `32G`, `32Gb`, `32GiB` for a
@@ -675,7 +681,10 @@ The settings file is yours and is not in the repository. The template is.
 
 | what | from |
 |---|---|
-| the window each profile holds, and the attention cache it holds it at | asked of `llama-fit-params` against each card's total memory, searched until the placement lands near each card's reserve |
+| the window each profile holds | asked of `llama-fit-params` against each card's total memory, with what it is never told about a prediction head added, searched until the placement lands near each card's reserve |
+| which cards a profile runs on | the fastest card alone first, then each card added in front of it, then a slave's card, each only where it holds a longer window than every one before |
+| the attention cache | `q8_0`, with `q4_0` beside it only on a card alone while `q8_0` holds less than `ample_ctx_tokens` there -- or instead of it, where `q8_0` does not fit a machine's only card |
+| whether a prediction head runs | both ways on a machine with one card; with a second card, always where the file carries one |
 | how many expert layers of a mixture stay in system memory | the same search, along the other lever |
 | how many layers each card holds, where there are several | laid out from the newest card back, each taking layers while that brings it nearer its reserve |
 | the micro-batch a profile runs at | `ubatch-size` from `[shared]`, halved down to 128 only where the window it buys is worth the prefill it costs |
@@ -691,15 +700,33 @@ fits *right now* is a different question, and that is what
 ## Several cards, and a card lent over the network
 
 **Several cards in the machine** need nothing set. `calibrate` reads every card
-`nvidia-smi` lists, and every profile runs across all of them: a second card is window
-added to every model, not a second place to put one.
+`nvidia-smi` lists and adds them one at a time, the fastest first. The fastest card alone
+is placed first, exactly as a machine with only that card would be: those are the
+quickest profiles, with the compromises one card makes. Then the next card is added in
+front of it, and a profile across both is written only where it holds a longer window
+than the fastest card alone did for the same cache and head. Every card added costs
+speed, so it has to buy window; the profiles add up, and which to load is chosen by name.
+A slave's card is the last one added.
 
-The cards run in order of generation, the oldest first, and a model's layers pass through
-them in that order. The last card is the one that works hardest -- it takes the most
-layers, the output and the prediction head -- so it is the newest. The layers are laid out
-from that end: the last card takes blocks for as long as each one brings what it leaves
-free nearer its reserve, the card before it does the same with what remains, and the first
-card takes the rest. Every card holds at least one block.
+With a 16 GiB card driving the monitors and an 8 GiB one beside it, `qwen3.8` gets
+`qwen3.8-25k-q8-mtp` and `qwen3.8-37k-q4-mtp` on the 16 GiB card alone and
+`qwen3.8-110k-q8-mtp` across both, while `gemma4-12b`, which holds its whole trained
+window on the 16 GiB card, gets that one profile and nothing across two.
+
+Two rules follow the cards. Where the machine has a second card, every profile runs the
+prediction head a file carries: dropping it would buy window the second card buys
+better. And a coarser `q4_0` cache is offered only on a card alone, beside `q8_0` while
+`q8_0` holds less than `ample_ctx_tokens` there; a profile across several devices is
+always `q8_0`. A model whose `q8_0` does not fit on the fastest card at all gets a
+`q4_0` profile of that card only on a machine with one card -- with several, it is
+placed across the cards or not at all.
+
+The cards of a profile run in order of generation, the oldest first, and a model's layers
+pass through them in that order. The last card is the one that works hardest -- it takes
+the most layers, the output and the prediction head -- so it is the newest. The layers are
+laid out from that end: the last card takes blocks for as long as each one brings what it
+leaves free nearer its reserve, the card before it does the same with what remains, and
+the first card takes the rest. Every card of a profile holds at least one block.
 
 The numbers are `nvidia-smi`'s. CUDA on its own counts the fastest card first; every
 process these programs start is told to count in bus order, as `nvidia-smi` does, so
@@ -708,29 +735,37 @@ process these programs start is told to count in bus order, as `nvidia-smi` does
 A profile on two cards, as `calibrate` writes it, with the sampler values left out:
 
 ```ini
-[qwen3.8-152k-q8]
-; VRAM REQUIRED: 7172 MiB on CUDA1, 14209 MiB on CUDA0, held from the moment this profile loads
+[qwen3.8-110k-q8-mtp]
+; VRAM REQUIRED: 7212 MiB on CUDA1, 14152 MiB on CUDA0, held from the moment this profile loads
 model = D:\models\unsloth\Qwen3.8-27B-GGUF\Qwen3.8-27B-UD-IQ4_XS.gguf
 cache-type-k = q8_0
 cache-type-v = q8_0
-ctx-size = 152000
+ctx-size = 110000
 device = CUDA1,CUDA0
 fit = off
 gpu-layers = 99
+spec-draft-n-max = 3
+spec-draft-type-k = q8_0
+spec-draft-type-v = q8_0
+spec-type = draft-mtp
 split-mode = layer
-tensor-split = 23,43
+tensor-split = 25,41
 ```
 
-`tensor-split` counts layers per card, in the order `device` names the cards: 23 on the
-older one and 43 on the newer, the output and the head's own layer among the 43.
+`tensor-split` counts layers per card, in the order `device` names the cards: 25 on the
+older one and 41 on the newer, the output and the head's own layer among the 41. Loaded,
+this profile held 6939 MiB on the 8 GiB card and 13978 on the 16 GiB one -- a little under
+what its requirement says, which is the side `calibrate` errs on. A profile on one card of
+several names that card too, `device = CUDA0` with `split-mode = none`: left unnamed,
+llama.cpp would take the first card it counts.
 
 What each card is left:
 
 | the card | keeps about |
 |---|---|
-| the only card in the machine | `reserve_mib`, as it always has |
-| one of several, driving a monitor | `reserve_multi_gpu_mib`: 2048, enough to work at the desktop while the rest serve |
-| one of several, driving nothing | 1024 |
+| a card alone: a machine's only card, or the fastest of several in its own profiles | `reserve_mib` |
+| a card beside others, driving a monitor | `reserve_multi_gpu_mib`: 2048, enough to work at the desktop while the rest serve |
+| a card beside others, driving nothing | 1024 |
 | a card lent over the network | `reserve_mib` under `[slave]`: 2048, everything its own machine keeps |
 
 No card is left much less than 1024, whatever the file says -- Windows keeps part of every
@@ -749,6 +784,12 @@ extra working buffers to do it, and generates several per cent faster for it. `c
 gives that up only where the window without it is at least 30% longer, and a section that
 gives it up carries an `override-tensor` naming a tensor no model has: any override at
 all is what turns it off.
+
+A prediction head costs more than the estimator can be told about: `llama-fit-params`
+takes no `--spec-type`. So on top of its estimate `calibrate` adds what the server holds
+for a head -- its weights and its cache, the working buffers of the draft context on the
+last card, and on every card a snapshot of each recurrent layer's state for every token
+the head drafts, which is what a rejected draft is rolled back to.
 
 **A card lent over the network.** Another machine with an NVIDIA card -- a laptop, say --
 can lend it to this one. It runs llama.cpp's RPC worker, which offers that card to
@@ -815,21 +856,17 @@ taken off it -- and `--reserve` writes another. `--remove` takes the table out, 
 second `install master` replaces the first, so there is one slave at most. It says whether
 the worker answers, and writes the table either way.
 
-`calibrate` then places every model twice: on the machine's own cards, and with the
-slave's card in front of them. In front, because a card reached over the network is slower
-than any card in the machine, so it is the one that takes what the others leave. A profile
-across the slave is written only where its window is longer than the one the machine's own
-cards give the same model with the same cache and head, and it is written beside that one
-rather than instead of it: which to load is chosen by name, the way a window is chosen
-already. With cards of 8 and 16 GiB and a slave of 12, `qwen3.8-152k-q8` runs on the two
-cards and `qwen3.8-262k-q8` across all three, and a section of the second names the worker
-it reaches:
+`calibrate` then adds the slave's card last, in front of all of the machine's cards. In
+front, because a card reached over the network is slower than any card in the machine,
+so it is the one that takes what the others leave. A profile across the slave is written
+only where its window is longer than every profile before it gives the same model with
+the same cache and head, beside those rather than instead of them. Its section names the
+worker it reaches:
 
 ```ini
 device = RPC0,CUDA1,CUDA0
 rpc = <that machine>:50052
 split-mode = layer
-tensor-split = 12,18,36
 ```
 
 With a slave in the chain llama.cpp does not run pieces of a prompt on the cards at once,

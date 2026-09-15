@@ -58,17 +58,17 @@ preset_path = 'llamacpp.models.ini'
 #   50%                       a share of the memory installed
 # cache_ram = '50%'
 
-# Video memory in MiB to leave for everything that is not a model, on a machine with one
-# card. A target to land near, not a threshold to clear: one step of the
-# mixture-of-experts lever is some 400 MiB, so a placement lands where the lever allows
-# rather than on the line. Landing a little under is no worse than landing a little
-# over. Below 1024, 0 included, it means as near 1024 as the placement lands: Windows
-# keeps part of every card to itself.
+# Video memory in MiB to leave for everything that is not a model, on a card a profile
+# runs alone: a machine's only card, or the fastest of several. A target to land near,
+# not a threshold to clear: one step of the mixture-of-experts lever is some 400 MiB, so
+# a placement lands where the lever allows rather than on the line. Landing a little
+# under is no worse than landing a little over. Below 1024, 0 included, it means as near
+# 1024 as the placement lands: Windows keeps part of every card to itself.
 reserve_mib = 1024
 
-# The same where the machine has several cards, on each card that drives a monitor: one
-# of them is worked at while the others serve, and a desktop wants room. A card driving
-# nothing is left about 1024, and reserve_mib above places nothing there.
+# The same on each card that drives a monitor, in a profile across several cards: one of
+# them is worked at while the others serve, and a desktop wants room. A card driving
+# nothing is left about 1024 there.
 # reserve_multi_gpu_mib = 2048
 
 # Shortest window worth writing out, in tokens. Below some such length a profile stops
@@ -82,7 +82,9 @@ min_ctx_tokens = 25000
 # tokens. A coarser cache is precision given up to buy window, so it earns a profile of
 # its own only where the precise one leaves the window short. Once the window is this
 # long there is nothing left to buy, and a second profile at the same length holding the
-# conversation less exactly is not a choice worth offering.
+# conversation less exactly is not a choice worth offering. A coarser cache is only ever
+# offered on a card alone: a profile across several cards is precise however short its
+# window, since another card is what buys it window.
 ample_ctx_tokens = 100000
 
 
