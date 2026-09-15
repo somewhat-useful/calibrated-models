@@ -391,17 +391,20 @@ def chains(cards: NonEmpty[Installed], workers: Sequence[Worker],
     all of the machine's cards behind its card: reached over the network, it is slower
     than any of them, and it goes first.
 
-    What a card is left depends on the chain. Alone it is left what a machine's only
-    card is left; beside other cards, what a card with a monitor, or without one, is.
+    What a card is left is the same in every chain it is part of. A machine's only card
+    is left the reserve for one card. Where there are several, the reserve is left on
+    each card a monitor is plugged into, and a card with none is left what Windows keeps
+    -- alone as well, which is what moving the monitors off a card is for.
     """
     latest_first = sorted(cards,
                           key=lambda one: (one.capability, one.card.total, -one.index),
                           reverse=True)
+    several = len(latest_first) > 1
 
     levels = []
     for count in range(1, len(latest_first) + 1):
         first, *rest = (local_seat(one.index, one.card.total,
-                                   _reserve(one, count > 1, reserves))
+                                   _reserve(one, several, reserves))
                         for one in reversed(latest_first[:count]))
         levels.append(NonEmpty(first, *rest))
 

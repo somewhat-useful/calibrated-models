@@ -163,8 +163,26 @@ class TheChainsAddTheMachinesCardsOneAtATimeThenTheSlave(unittest.TestCase):
         self.assertEqual([CudaIndex(1)],
                          [seat.device.index for seat in local(mixed).first])
 
-    def test_the_fastest_card_alone_is_left_what_a_machines_only_card_is(self):
-        self.assertEqual(Mib(1024), local(two()).first.first.reserve)
+    def test_of_several_cards_one_with_a_monitor_keeps_the_multi_gpu_reserve_alone(self):
+        for chain in local(two()):
+            seats = {seat.device.index: seat for seat in chain}
+            with self.subTest(chain=list(seats)):
+                self.assertEqual(Mib(2048), seats[CudaIndex(0)].reserve)
+
+    def test_of_several_cards_one_without_a_monitor_keeps_what_windows_keeps_alone(self):
+        """The monitors moved onto the slower card, so the fastest serves with all of its
+        memory but what Windows keeps -- whatever a machine's only card would be left."""
+        moved = NonEmpty(card(0, 16303, Capability(12, 0), False),
+                         card(1, 8192, Capability(7, 5), True))
+        chains = place.chains(moved, (), Reserves(alone=Mib(3072), with_others=Mib(2048)))
+
+        self.assertEqual([CudaIndex(0)], [seat.device.index for seat in chains.first])
+        for chain in chains:
+            seats = {seat.device.index: seat for seat in chain}
+            with self.subTest(chain=list(seats)):
+                self.assertEqual(WINDOWS_SHARE, seats[CudaIndex(0)].reserve)
+                if CudaIndex(1) in seats:
+                    self.assertEqual(Mib(2048), seats[CudaIndex(1)].reserve)
 
     def test_beside_others_a_card_with_a_monitor_is_left_the_multi_gpu_reserve(self):
         seats = {seat.device.index: seat for seat in local(two())[1]}
@@ -258,14 +276,15 @@ class ADeviceIsAddedOnlyForTheWindowItBuys(unittest.TestCase):
     chain after it adds profiles only where they hold a longer window than every chain
     before it did."""
 
-    def test_the_fastest_card_alone_is_placed_as_a_machine_with_only_that_card_is(self):
+    def test_the_fastest_card_alone_is_placed_as_one_card_left_the_same_is(self):
         def shape(settings):
             return (settings.ctx, settings.cache, settings.head, settings.placement,
                     tuple(settings.spare), tuple(settings.layout.layers),
                     settings.layout.halvings)
 
         answer = law(DENSE)
-        alone, _ = run(DENSE, local(NonEmpty(two().first)), answer)
+        same = Reserves(alone=RESERVES.with_others, with_others=RESERVES.with_others)
+        alone, _ = run(DENSE, place.chains(NonEmpty(two().first), (), same), answer)
         both, _ = run(DENSE, local(two()), answer)
 
         self.assertTrue(alone)

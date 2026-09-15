@@ -122,8 +122,7 @@ def _reachable(slave: NoSlave | Worker) -> tuple[Worker, ...]:
 
 def _seats(machine: Machine, limits: Limits) -> tuple[str, ...]:
     """Every chain the placements are computed against, a device a line and the chains
-    apart. A card is left a different amount alone than beside others, so it is said
-    again in every chain it is part of."""
+    apart."""
     cards = {one.index: one.card for one in machine.cards}
 
     lines = []

@@ -58,17 +58,17 @@ preset_path = 'llamacpp.models.ini'
 #   50%                       a share of the memory installed
 # cache_ram = '50%'
 
-# Video memory in MiB to leave for everything that is not a model, on a card a profile
-# runs alone: a machine's only card, or the fastest of several. A target to land near,
-# not a threshold to clear: one step of the mixture-of-experts lever is some 400 MiB, so
-# a placement lands where the lever allows rather than on the line. Landing a little
-# under is no worse than landing a little over. Below 1024, 0 included, it means as near
-# 1024 as the placement lands: Windows keeps part of every card to itself.
+# Video memory in MiB to leave for everything that is not a model, on a machine with one
+# card. A target to land near, not a threshold to clear: one step of the
+# mixture-of-experts lever is some 400 MiB, so a placement lands where the lever allows
+# rather than on the line. Landing a little under is no worse than landing a little
+# over. Below 1024, 0 included, it means as near 1024 as the placement lands: Windows
+# keeps part of every card to itself.
 reserve_mib = 1024
 
-# The same on each card that drives a monitor, in a profile across several cards: one of
-# them is worked at while the others serve, and a desktop wants room. A card driving
-# nothing is left about 1024 there.
+# The same where the machine has several cards, on each card that drives a monitor, in
+# every profile that card is part of: one of them is worked at while the others serve,
+# and a desktop wants room. A card driving nothing is left about 1024, alone as well.
 # reserve_multi_gpu_mib = 2048
 
 # Shortest window worth writing out, in tokens. Below some such length a profile stops

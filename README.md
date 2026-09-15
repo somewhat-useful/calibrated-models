@@ -643,8 +643,8 @@ file — and a machine serving one card has no reason to name any of them.
 
 | key | what it decides |
 |---|---|
-| `reserve_mib` | video memory to leave for everything that is not a model, on a card a profile runs alone |
-| `reserve_multi_gpu_mib` | the same on each card that drives a monitor, in a profile across several cards. 2048 |
+| `reserve_mib` | video memory to leave for everything that is not a model, on a machine with one card |
+| `reserve_multi_gpu_mib` | the same where the machine has several cards, on each card that drives a monitor. 2048 |
 | `min_ctx_tokens` | below which a window stops being worth serving |
 | `ample_ctx_tokens` | past which a coarser attention cache buys nothing worth having on a card alone |
 | `cache_ram` | how much system memory the prompt cache may hold |
@@ -703,17 +703,19 @@ fits *right now* is a different question, and that is what
 `nvidia-smi` lists and adds them one at a time, the fastest first. Nothing a card reports
 says how fast it is, so the latest generation stands for the fastest, and of one
 generation the card with more memory goes first; whether a monitor is plugged into it
-decides nothing. The fastest card alone is placed first, exactly as a machine with only
-that card would be: those are the quickest profiles, with the compromises one card
-makes. Then the next card is added in front of it, and a profile across both is written
-only where it holds a longer window than the fastest card alone did for the same cache
-and head. Every card added costs speed, so it has to buy window; the profiles add up, and
-which to load is chosen by name. A slave's card is the last one added.
+decides nothing. The fastest card alone is placed first: those are the quickest
+profiles, with the compromises one card makes. Then the next card is added in front of
+it, and a profile across both is written only where it holds a longer window than the
+fastest card alone did for the same cache and head. Every card added costs speed, so it
+has to buy window; the profiles add up, and which to load is chosen by name. A slave's
+card is the last one added.
 
-With a 16 GiB card driving the monitors and an 8 GiB one beside it, `qwen3.8` gets
+With the monitors on an 8 GiB card and a 16 GiB one beside it, `qwen3.8` gets
 `qwen3.8-25k-q8-mtp` and `qwen3.8-37k-q4-mtp` on the 16 GiB card alone and
 `qwen3.8-110k-q8-mtp` across both, while `gemma4-12b`, which holds its whole trained
 window on the 16 GiB card, gets that one profile and nothing across two.
+`ornith-1.5-35b`, a mixture the 16 GiB card alone holds only with experts in system
+memory, gets one profile across both cards, with the experts of 3 layers there.
 
 Three rules follow the cards. Where the machine has a second card, every profile runs
 the prediction head a file carries: dropping it would buy window the second card buys
@@ -742,7 +744,7 @@ A profile on two cards, as `calibrate` writes it, with the sampler values left o
 
 ```ini
 [qwen3.8-110k-q8-mtp]
-; VRAM REQUIRED: 7212 MiB on CUDA1, 14152 MiB on CUDA0, held from the moment this profile loads
+; VRAM REQUIRED: 6164 MiB on CUDA1, 15201 MiB on CUDA0, held from the moment this profile loads
 model = D:\models\unsloth\Qwen3.8-27B-GGUF\Qwen3.8-27B-UD-IQ4_XS.gguf
 cache-type-k = q8_0
 cache-type-v = q8_0
@@ -755,12 +757,12 @@ spec-draft-type-k = q8_0
 spec-draft-type-v = q8_0
 spec-type = draft-mtp
 split-mode = layer
-tensor-split = 25,41
+tensor-split = 21,45
 ```
 
-`tensor-split` counts layers per card, in the order `device` names the cards: 25 on the
-older one and 41 on the newer, the output and the head's own layer among the 41. Loaded,
-this profile held 6939 MiB on the 8 GiB card and 13978 on the 16 GiB one -- a little under
+`tensor-split` counts layers per card, in the order `device` names the cards: 21 on the
+older one and 45 on the newer, the output and the head's own layer among the 45. Loaded,
+this profile took 5885 MiB of the 8 GiB card and 15023 of the 16 GiB one -- a little under
 what its requirement says, which is the side `calibrate` errs on. A profile on one card of
 several names that card too, `device = CUDA0` with `split-mode = none`: left unnamed,
 llama.cpp would take the first card it counts.
@@ -769,9 +771,9 @@ What each card is left:
 
 | the card | keeps about |
 |---|---|
-| a card alone: a machine's only card, or the fastest of several in its own profiles | `reserve_mib` |
-| a card beside others, driving a monitor | `reserve_multi_gpu_mib`: 2048, enough to work at the desktop while the rest serve |
-| a card beside others, driving nothing | 1024 |
+| a machine's only card | `reserve_mib` |
+| of several cards, one a monitor is plugged into | `reserve_multi_gpu_mib`: 2048, enough to work at the desktop while the rest serve |
+| of several cards, one with no monitor | 1024, what Windows keeps -- alone as well, so a card the monitors are moved off serves with all the rest of its memory |
 | a card lent over the network | `reserve_mib` under `[slave]`: 2048, everything its own machine keeps |
 
 No card is left much less than 1024, whatever the file says -- Windows keeps part of every
