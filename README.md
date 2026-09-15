@@ -779,6 +779,10 @@ card to itself, desktop or not -- so `0` means as near 1024 as the layers land. 
 of these is a target to land near rather than a line to clear, the way `reserve_mib`
 always was: a layer that fits by landing a few megabytes under goes on.
 
+Which card drives a monitor is what `nvidia-smi` says while `calibrate` runs, and over a
+remote session Windows detaches the machine's monitors, so no card has one. `calibrate`
+says so when it is run that way and carries on: run it at the machine itself.
+
 The micro-batch is searched as well, on one card as on several. `ubatch-size` in
 `[shared]` is where the search starts, and each halving of it down to 128 is placed too.
 A halving costs roughly a tenth of prefill speed, so it is taken only where it brings the

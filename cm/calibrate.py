@@ -12,7 +12,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from . import (devices, files, invoke, place, proc, reach, reading, releases, render,
-               report, workspace)
+               report, session, workspace)
 from .config import Config, ConfigError, Model, NoSlave
 from .estimate import parse_requirement
 from .facts import parse_facts
@@ -58,6 +58,14 @@ def _calibrate(settings: Path) -> None:
         raise ConfigError(_names_nothing(settings, read))
 
     estimator = _estimator(workspace.engines())
+
+    match session.connection():
+        case session.Remotely():
+            print(report.remotely())
+            print()
+        case session.AtTheConsole():
+            pass
+
     machine = devices.probe()
     reserves = Reserves(alone=read.reserve, with_others=read.reserve_multi_gpu)
     chains = place.chains(machine.cards, _reachable(read.slave), reserves)
