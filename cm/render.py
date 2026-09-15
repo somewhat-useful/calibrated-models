@@ -15,8 +15,8 @@ from dataclasses import dataclass
 from .config import Config, ConfigError, Model, Value
 from .machine import Machine, SystemMemory, threads
 from .name import Profile
-from .place import (NO_TENSOR, ExpertsOnCpu, Layout, Settings, device_name, endpoints,
-                    holds, micro_batch, runs_apart_by_override)
+from .place import (NO_TENSOR, Among, ExpertsOnCpu, Layout, Settings, device_name,
+                    endpoints, holds, micro_batch, runs_apart_by_override)
 from .rpc import written
 from .units import Mib
 
@@ -143,16 +143,22 @@ def _layout(config: Config, layout: Layout) -> Mapping[str, Value]:
     """Where the layers go and the micro-batch they run at, where either is not what
     [*] already says.
 
-    One card at the file's own micro-batch adds nothing: the shared block already runs
-    it that way, and a section repeating it would be a machine with one card described
-    differently for no difference.
+    A machine's only card at the file's own micro-batch adds nothing: the shared block
+    already runs it that way, and a section repeating it would be a machine with one card
+    described differently for no difference. One card of several is named and not split.
     """
     keys: dict[str, Value] = {}
     if layout.halvings > 0:
         keys["ubatch-size"] = micro_batch(config.runtime.ubatch, layout.halvings)
 
     if len(layout.devices) == 1:
-        return keys
+        match layout.among:
+            case Among.ONE:
+                return keys
+            case Among.SEVERAL:
+                keys["device"] = device_name(layout.devices.first)
+                keys["split-mode"] = "none"
+                return keys
 
     keys["device"] = ",".join(device_name(one) for one in layout.devices)
     keys["split-mode"] = "layer"
@@ -176,7 +182,7 @@ def _needs(settings: Settings) -> tuple[str, ...]:
     kept away from what it describes goes stale with nobody noticing.
     """
     held = holds(settings)
-    if len(held) == 1:
+    if len(held) == 1 and settings.layout.among is Among.ONE:
         return (f"{REQUIRED}: {held.first} MiB of video memory, "
                 f"held from the moment this profile loads",)
 

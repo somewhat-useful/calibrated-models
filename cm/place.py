@@ -33,7 +33,8 @@ to run beside, and what is left is the search above.
 
 On several devices each point of the lever is also a question of where the layers go.
 The chain is filled from its end, the fastest device taking all it has room for, and the
-point is judged by the first device, which takes what is left. The micro-batch is a third
+point is judged by the first device, which takes what is left. A card left nothing to hold
+is not used at all. The micro-batch is a third
 lever, and whether the cards run pieces of a prompt at once a fourth; both are given up
 only for a window worth what they cost.
 """
@@ -213,10 +214,23 @@ class Pipeline(Enum):
     OFF = "off"
 
 
+class Among(Enum):
+    """How many cards of its own the machine chose a layout's cards from.
+
+    A machine with one card has never been told which card to use, and is not told now.
+    Where there are several, a layout on one of them names it: left unnamed, llama.cpp
+    would take the first card it counts, whichever that is.
+    """
+
+    ONE = "one"
+    SEVERAL = "several"
+
+
 @dataclass(frozen=True)
 class Layout:
     """Where the layers of one configuration go, and the micro-batch they run at.
 
+    devices are the ones that hold something, in the order the layers run through them.
     layers counts per device the way the loader counts: the model's blocks, and on the
     last device also the output and a prediction head's block. The last device is the one
     that carries both.
@@ -226,6 +240,7 @@ class Layout:
     layers: NonEmpty[Layers]
     halvings: Halvings
     pipeline: Pipeline
+    among: Among
 
     def __post_init__(self) -> None:
         if len(self.devices) != len(self.layers):
@@ -550,8 +565,8 @@ def settings(facts: ModelFacts, allowed: Allowed, limits: Limits,
     describing a placement that does not fit.
 
     A chain with a slave in it is slower than the machine's own cards, so a placement on
-    it is kept only where its window is longer than the one the first chain settled on
-    for the same variant.
+    it is kept only where it uses the slave's card at all, and its window is longer than
+    the one the first chain settled on for the same variant.
     """
     points = grid(facts, limits)
     if not points:
@@ -565,22 +580,33 @@ def settings(facts: ModelFacts, allowed: Allowed, limits: Limits,
             match _best(facts, limits, variant, chain, points, answers):
                 case _Chosen(index, known):
                     window = points[index].ctx
+                    layout = known.arranged.layout
                     if position == 0:
                         own[variant] = window
+                    elif not endpoints(layout):
+                        continue
                     elif variant in own and window <= own[variant]:
                         continue
                     chosen.append(Settings(ctx=window,
                                            cache=variant.cache,
                                            head=variant.head,
                                            placement=points[index].placement,
-                                           spare=known.spare,
-                                           layout=known.arranged.layout))
+                                           spare=_used(chain, known.spare, layout),
+                                           layout=layout))
                 case _Ask() | _Nothing():
                     pass
 
         kept.extend(_worth_offering(chosen, limits))
 
     return tuple(kept)
+
+
+def _used(chain: Chain, amounts: NonEmpty[Mib], layout: Layout) -> NonEmpty[Mib]:
+    """Of an amount for every device of the chain, the amounts of the devices the layout
+    uses, in the same order."""
+    first, *rest = (amount for seat, amount in zip(chain, amounts)
+                    if seat.device in layout.devices)
+    return NonEmpty(first, *rest)
 
 
 def resident(chosen: Sequence[Settings],
@@ -657,8 +683,7 @@ class _Ask:
 @dataclass(frozen=True)
 class _Unanswerable:
     """Nothing this search could be told would settle it: the estimator refused a point
-    it needs, which asking again would not change, or the chain has more devices than
-    the model has blocks to give them."""
+    it needs, which asking again would not change."""
 
 
 @dataclass(frozen=True)
@@ -1023,9 +1048,6 @@ def _arranged(facts: ModelFacts, search: _Search, point: Point,
     device that can take one more block by missing it slightly takes the block.
     """
     count = len(search.chain)
-    if count > facts.n_layer:
-        return _Unanswerable()
-
     after: tuple[Layers, ...] = ()
     short: tuple[bool, ...] = ()
     left = facts.n_layer
@@ -1053,19 +1075,23 @@ def _blocks_for(facts: ModelFacts, search: _Search, point: Point, position: int,
 
     What a device needs grows with every block it holds, so the count that leaves its
     reserve is found by bisection, and of it and the count one past, the nearer to the
-    reserve is taken. Every device before it keeps at least one block.
+    reserve is taken. A device may take none, and is then not used: what it would have
+    held fits on the devices after it. The last device carries the output and takes at
+    least one.
     """
     reserve = search.chain[position].reserve
-    most = left - position
+    least = 1 if position == len(search.chain) - 1 else 0
+    most = left
 
     def spare_with(blocks: int) -> _Spare | _Ask | _Unanswerable:
         return _spare_with(facts, search, point, position, left, after, blocks, answers)
 
-    match spare_with(1):
+    match spare_with(least):
         case _Ask() | _Unanswerable() as waiting:
             return waiting
         case _Spare(one) if one < reserve:
-            return _Took(Layers(1), short=True)
+            # Holding nothing, a device short of its reserve is short of nothing it holds.
+            return _Took(Layers(least), short=least > 0)
         case _Spare(one):
             pass
 
@@ -1077,7 +1103,7 @@ def _blocks_for(facts: ModelFacts, search: _Search, point: Point, position: int,
         case _Spare(full):
             pass
 
-    low, above, high, below = 1, one, most, full
+    low, above, high, below = least, one, most, full
     while high - low > 1:
         middle = (low + high) // 2
         match spare_with(middle):
@@ -1097,27 +1123,41 @@ def _spare_with(facts: ModelFacts, search: _Search, point: Point, position: int,
                 left: int, after: tuple[Layers, ...], blocks: int,
                 answers: Mapping[Question, Requirement]) -> _Spare | _Ask | _Unanswerable:
     """What the device at `position` leaves holding this many blocks, the devices after
-    it holding what they already took and the rest of the model on the devices before
-    it: one block on each of them but the first, which holds the remainder."""
-    between = [Layers(1)] * (position - 1)
-    trial = NonEmpty(Layers(left - blocks - (position - 1)), *between, Layers(blocks),
-                     *after)
+    it holding what they already took and the rest of the model on the first device.
+    Holding none, it leaves all it has, and nothing needs asking."""
+    seat = search.chain[position]
+    if blocks == 0:
+        return _Spare(seat.available)
+
+    between = [Layers(0)] * (position - 1)
+    trial = NonEmpty(Layers(left - blocks), *between, Layers(blocks), *after)
 
     match _needed(facts, search, point, _question(facts, search, point, trial), answers):
         case _Ask() | _Unanswerable() as waiting:
             return waiting
         case NonEmpty() as needed:
-            return _Spare(Mib(search.chain[position].available - needed[position]))
+            return _Spare(Mib(seat.available - needed[position]))
 
 
 def _question(facts: ModelFacts, search: _Search, point: Point,
               blocks: NonEmpty[Layers]) -> Question:
-    """The question about this many blocks on each device of the search's chain."""
-    *before, last = blocks
-    layout = Layout(devices=search.chain.map(lambda seat: seat.device),
-                    layers=NonEmpty(*before, Layers(last + _trailing(facts))),
+    """The question about this many blocks on each device of the search's chain.
+
+    A device holding none is not in it. Where one device is left, nothing runs beside it,
+    whichever way the search was running the cards.
+    """
+    last = len(search.chain) - 1
+    used = [(seat.device, Layers(count + (_trailing(facts) if position == last else 0)))
+            for position, (seat, count) in enumerate(zip(search.chain, blocks))
+            if count > 0 or position == last]
+    devices, layers = zip(*used)
+    own = sum(1 for seat in search.chain if isinstance(seat.device, Local))
+
+    layout = Layout(devices=NonEmpty(*devices),
+                    layers=NonEmpty(*layers),
                     halvings=search.halvings,
-                    pipeline=search.pipeline)
+                    pipeline=search.pipeline if len(used) > 1 else Pipeline.OFF,
+                    among=Among.ONE if own == 1 else Among.SEVERAL)
 
     return Question(point.ctx, search.variant.cache, point.placement, layout)
 
@@ -1125,15 +1165,19 @@ def _question(facts: ModelFacts, search: _Search, point: Point,
 def _needed(facts: ModelFacts, search: _Search, point: Point, question: Question,
             answers: Mapping[Question, Requirement]
             ) -> NonEmpty[Mib] | _Ask | _Unanswerable:
-    """What a question's answer says each device needs, the head counted in."""
+    """What a question's answer says each device of the chain needs, the head counted
+    in. A device the question leaves out needs nothing."""
     if question not in answers:
         return _Ask(question)
 
     match answers[question]:
         case Refused():
             return _Unanswerable()
-        case Needs() as answer if len(answer.cards) != len(search.chain):
+        case Needs() as answer if len(answer.cards) != len(question.layout.devices):
             # An answer about other devices than the ones asked about is no answer.
             return _Unanswerable()
         case Needs() as answer:
-            return requirement(facts, search.variant, point.ctx, answer)
+            held = dict(zip(question.layout.devices,
+                            requirement(facts, search.variant, point.ctx, answer)))
+            first, *rest = (held.get(seat.device, Mib(0)) for seat in search.chain)
+            return NonEmpty(first, *rest)

@@ -11,8 +11,8 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from .config import Runtime
-from .place import (NO_TENSOR, ExpertsOnCpu, Layout, Question, device_name, endpoints,
-                    micro_batch, runs_apart_by_override)
+from .place import (NO_TENSOR, Among, ExpertsOnCpu, Layout, Question, device_name,
+                    endpoints, micro_batch, runs_apart_by_override)
 from .rpc import written
 
 # Every layer on the card, as llama.cpp spells it.
@@ -53,18 +53,23 @@ def argv(binary: Path, model: Path, question: Question,
 def _split(layout: Layout) -> Sequence[str]:
     """Which devices the layers go across.
 
-    One device is told there is no splitting and nothing else, which is all a machine
-    with one card has ever been told. Several are named in the order the layers run
-    through them, each with the count of layers it holds.
+    A machine's only card is told there is no splitting and nothing else, which is all a
+    machine with one card has ever been told. One card of several is named as well: left
+    unnamed, llama.cpp takes the first card it counts. Several are named in the order the
+    layers run through them, each with the count of layers it holds.
     """
-    if len(layout.devices) == 1:
-        return ("--split-mode", "none")
+    if len(layout.devices) > 1:
+        return (*_workers(layout),
+                "--split-mode", "layer",
+                "--device", ",".join(device_name(one) for one in layout.devices),
+                "--tensor-split", ",".join(str(count) for count in layout.layers),
+                *_apart(layout))
 
-    return (*_workers(layout),
-            "--split-mode", "layer",
-            "--device", ",".join(device_name(one) for one in layout.devices),
-            "--tensor-split", ",".join(str(count) for count in layout.layers),
-            *_apart(layout))
+    match layout.among:
+        case Among.ONE:
+            return ("--split-mode", "none")
+        case Among.SEVERAL:
+            return ("--split-mode", "none", "--device", device_name(layout.devices.first))
 
 
 def _workers(layout: Layout) -> Sequence[str]:

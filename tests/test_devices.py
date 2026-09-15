@@ -193,14 +193,60 @@ class TheLayersAreAllPlacedAndOnlyOnce(unittest.TestCase):
                     self.assertTrue(all(count >= 1 for count in layers[:-1]))
                     self.assertGreaterEqual(layers[-1], 1 + trailing)
 
-    def test_a_layout_names_every_device_of_its_chain_in_order(self):
+    def test_a_layout_names_devices_of_its_chain_in_order_ending_with_the_fastest(self):
         chains = local(two(), (WORKER,))
         chosen, _ = run(DENSE, chains, law(DENSE))
 
-        orders = {tuple(seat.device for seat in chain) for chain in chains}
+        def within(devices, chain):
+            remaining = iter(seat.device for seat in chain)
+            return (all(device in remaining for device in devices)
+                    and devices[-1] == chain.last.device)
+
+        self.assertTrue(chosen)
         for settings in chosen:
-            with self.subTest(settings=settings.ctx):
-                self.assertIn(tuple(settings.layout.devices), orders)
+            devices = tuple(settings.layout.devices)
+            with self.subTest(devices=devices):
+                self.assertTrue(any(within(devices, chain) for chain in chains))
+                self.assertEqual(len(devices), len(settings.spare))
+
+
+SMALL = ModelFacts(n_expert=0, n_layer=Layers(48), n_ctx_train=Tokens(32768), head=NoHead())
+
+
+class ACardWithNothingToHoldIsNotUsed(unittest.TestCase):
+    """A card that would only hold what the faster one already has room for adds a hop
+    through a slower card and buys nothing."""
+
+    def test_a_model_whole_on_the_fastest_card_at_its_longest_runs_there_alone(self):
+        chosen, answers = run(SMALL, local(two()), law(SMALL))
+
+        self.assertTrue(chosen)
+        for settings in chosen:
+            with self.subTest(cache=settings.cache):
+                self.assertEqual(32000, settings.ctx)
+                self.assertEqual((Local(CudaIndex(0), Mib(16303)),),
+                                 tuple(settings.layout.devices))
+                self.assertIs(place.Among.SEVERAL, settings.layout.among)
+                self.assertIs(Pipeline.OFF, settings.layout.pipeline)
+                self.assertEqual(1, len(settings.spare))
+
+    def test_the_only_card_of_a_machine_is_placed_on_as_it_always_was(self):
+        chosen, answers = run(SMALL, local(NonEmpty(two().first)), law(SMALL))
+
+        self.assertTrue(chosen)
+        for question in answers:
+            with self.subTest(layers=question.layout.layers):
+                self.assertIs(place.Among.ONE, question.layout.among)
+
+    def test_a_slave_adds_profiles_and_changes_none_of_the_machines_own(self):
+        for facts in (DENSE, SMALL, DENSE_WITH_HEAD):
+            answer = law(facts)
+            without, _ = run(facts, local(two(fast=12288, slow=8192)), answer)
+            with_slave, _ = run(facts, local(two(fast=12288, slow=8192), (WORKER,)), answer)
+
+            with self.subTest(facts=facts):
+                self.assertEqual(list(without),
+                                 [one for one in with_slave if not place.endpoints(one.layout)])
 
 
 class NoDeviceIsEverOverrun(unittest.TestCase):
@@ -336,7 +382,8 @@ class AHalvingOfTheMicroBatchHasToBuyItsShareOfWindow(unittest.TestCase):
                                   place.Layout(question.layout.devices,
                                                question.layout.layers,
                                                place.Halvings(0),
-                                               question.layout.pipeline))
+                                               question.layout.pipeline,
+                                               question.layout.among))
             return flat(same)
 
         chosen, _ = run(DENSE, local(two()), ignoring)
@@ -373,7 +420,10 @@ class AHalvingOfTheMicroBatchHasToBuyItsShareOfWindow(unittest.TestCase):
 
 class TheCardsRunPiecesOfAPromptAtOnceUnlessApartIsMuchLonger(unittest.TestCase):
     def isolated(self, facts, chains, answer, pipeline):
-        alone = refusing(answer, lambda question: question.layout.pipeline is pipeline)
+        """Only this way of running several cards. A question about one card is about no
+        way of running them, and every search needs it answered."""
+        alone = refusing(answer, lambda question: len(question.layout.devices) == 1
+                         or question.layout.pipeline is pipeline)
         chosen, _ = run(facts, chains, alone)
         return {(one.cache, one.head): one.ctx for one in chosen}
 

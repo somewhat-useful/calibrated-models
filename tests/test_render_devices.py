@@ -10,8 +10,8 @@ import unittest
 
 from cm.machine import CudaIndex
 from cm.nonempty import NonEmpty
-from cm.place import (NO_TENSOR, CacheType, Endpoint, Layout, Local, Pipeline, Remote,
-                      Settings, WholeCard)
+from cm.place import (NO_TENSOR, Among, CacheType, Endpoint, Layout, Local, Pipeline,
+                      Remote, Settings, WholeCard)
 from cm.render import REQUIRED, preset
 from cm.units import Halvings, Layers, Mib, Port, Tokens
 from test_render import MACHINE, MEMORY, config, placed, read, stated
@@ -21,13 +21,15 @@ SLOW = Local(CudaIndex(1), Mib(8192))
 SLAVE = Remote(Endpoint("worker", Port(50052)), Mib(12288))
 
 
-def across(devices, layers, spare, halvings=0, pipeline=Pipeline.ON, ctx=150000):
+def across(devices, layers, spare, halvings=0, pipeline=Pipeline.ON, ctx=150000,
+           among=Among.SEVERAL):
     return Settings(ctx=Tokens(ctx), cache=CacheType.Q8_0, head=False,
                     placement=WholeCard(),
                     spare=NonEmpty(*map(Mib, spare)),
                     layout=Layout(devices=NonEmpty(*devices),
                                   layers=NonEmpty(*map(Layers, layers)),
-                                  halvings=Halvings(halvings), pipeline=pipeline))
+                                  halvings=Halvings(halvings), pipeline=pipeline,
+                                  among=among))
 
 
 def section(settings):
@@ -85,6 +87,35 @@ class EveryDeviceSaysWhatItWillHold(unittest.TestCase):
         self.assertEqual(1, len(said))
         self.assertIn(f"{REQUIRED}: {12288 - 2048} MiB on RPC0, {8192 - 1024} MiB on CUDA1, "
                       f"{16303 - 2048} MiB on CUDA0", said[0])
+
+
+class OneCardOfSeveralIsNamed(unittest.TestCase):
+    """A machine with several cards running a profile on one of them has to say which, or
+    the router takes the first card it counts."""
+
+    def test_the_section_names_the_card_and_splits_nothing(self):
+        written = section(across((FAST,), (66,), (5308,), pipeline=Pipeline.OFF))
+
+        self.assertEqual("CUDA0", written["device"])
+        self.assertEqual("none", written["split-mode"])
+        for key in ("tensor-split", "rpc", "override-tensor"):
+            with self.subTest(key=key):
+                self.assertNotIn(key, written)
+
+    def test_the_requirement_names_the_card(self):
+        text = preset(config(), MACHINE, MEMORY,
+                      (placed("model", across((FAST,), (66,), (5308,),
+                                              pipeline=Pipeline.OFF)),))
+
+        self.assertIn(f"{REQUIRED}: {16303 - 5308} MiB on CUDA0", stated(text)["model"][0])
+
+    def test_a_machines_only_card_is_not_named(self):
+        written = section(across((FAST,), (66,), (1024,), pipeline=Pipeline.OFF,
+                                 among=Among.ONE))
+
+        for key in ("device", "split-mode", "tensor-split"):
+            with self.subTest(key=key):
+                self.assertNotIn(key, written)
 
 
 if __name__ == "__main__":

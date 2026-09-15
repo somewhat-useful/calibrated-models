@@ -8,7 +8,7 @@ than in every test that needs one.
 from cm.estimate import Needs
 from cm.machine import Capability, Card, CudaIndex, Installed
 from cm.nonempty import NonEmpty
-from cm.place import Chain, Layout, Local, Pipeline, local_seat
+from cm.place import Among, Chain, Layout, Local, Pipeline, local_seat
 from cm.units import Halvings, Layers, Mib
 
 # The card these tests are written for, and the number llama.cpp gives it.
@@ -22,7 +22,8 @@ UBATCH = 512
 LAYOUT = Layout(devices=NonEmpty(Local(INDEX, TOTAL)),
                 layers=NonEmpty(Layers(65)),
                 halvings=Halvings(0),
-                pipeline=Pipeline.OFF)
+                pipeline=Pipeline.OFF,
+                among=Among.ONE)
 
 
 def installed(card: Card) -> NonEmpty[Installed]:

@@ -11,8 +11,8 @@ from cm.config import DEFAULT_RUNTIME, Runtime
 from cm.invoke import argv
 from cm.machine import CudaIndex
 from cm.nonempty import NonEmpty
-from cm.place import (NO_TENSOR, CacheType, Endpoint, Layout, Local, Pipeline, Question,
-                      Remote, WholeCard)
+from cm.place import (NO_TENSOR, Among, CacheType, Endpoint, Layout, Local, Pipeline,
+                      Question, Remote, WholeCard)
 from cm.units import Halvings, Layers, Mib, Port, Tokens
 from places import somewhere
 
@@ -24,9 +24,10 @@ SLOW = Local(CudaIndex(1), Mib(8192))
 SLAVE = Remote(Endpoint("worker", Port(50052)), Mib(12288))
 
 
-def asked(devices, layers, halvings=0, pipeline=Pipeline.ON, runtime=DEFAULT_RUNTIME):
+def asked(devices, layers, halvings=0, pipeline=Pipeline.ON, runtime=DEFAULT_RUNTIME,
+          among=Among.SEVERAL):
     layout = Layout(devices=NonEmpty(*devices), layers=NonEmpty(*map(Layers, layers)),
-                    halvings=Halvings(halvings), pipeline=pipeline)
+                    halvings=Halvings(halvings), pipeline=pipeline, among=among)
     return argv(BINARY, MODEL, Question(Tokens(45000), CacheType.Q8_0, WholeCard(), layout),
                 runtime)
 
@@ -56,12 +57,25 @@ class SeveralCardsAreNamedInTheOrderTheLayersRunThroughThem(unittest.TestCase):
 
 class OneCardIsAskedAboutAsItAlwaysWas(unittest.TestCase):
     def test_no_splitting_and_nothing_else(self):
-        line = asked((FAST,), (66,), pipeline=Pipeline.OFF)
+        line = asked((FAST,), (66,), pipeline=Pipeline.OFF, among=Among.ONE)
 
         self.assertEqual("none", after("--split-mode", line))
         for flag in ("--device", "--tensor-split", "--rpc", "-ot"):
             with self.subTest(flag=flag):
                 self.assertNotIn(flag, line)
+
+
+class OneCardOfSeveralIsNamed(unittest.TestCase):
+    """Left unnamed, llama.cpp would take the first card it counts."""
+
+    def test_it_is_named_and_nothing_is_split(self):
+        for card in (FAST, SLOW):
+            line = asked((card,), (66,), pipeline=Pipeline.OFF)
+            with self.subTest(card=card):
+                self.assertEqual("none", after("--split-mode", line))
+                self.assertEqual(f"CUDA{card.index}", after("--device", line))
+                for flag in ("--tensor-split", "--rpc", "-ot"):
+                    self.assertNotIn(flag, line)
 
 
 class CardsKeptApartAreKeptApartByAnOverrideThatMovesNothing(unittest.TestCase):
