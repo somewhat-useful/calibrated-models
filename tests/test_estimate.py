@@ -15,26 +15,43 @@ from cm.nonempty import NonEmpty
 from cm.units import Mib
 
 
-def card(mib: int) -> Needs:
+def card(model: int, context: int, working: int) -> Needs:
     """A placement that keeps nothing in system memory."""
-    return Needs(cards=NonEmpty(Mib(mib)), host=Mib(0))
+    return Needs(cards=NonEmpty(Mib(model + context + working)),
+                 working=NonEmpty(Mib(working)), host=Mib(0))
 
 
 class TheRequirementIsAllThreeNumbers(unittest.TestCase):
     def test_sums_model_context_and_compute(self):
         self.assertEqual(parse_requirement("CUDA0 12726 285 509\n"),
-                         card(12726 + 285 + 509))
+                         card(12726, 285, 509))
 
     def test_no_single_number_is_mistaken_for_the_answer(self):
         """Distinct numbers: a parser returning any one of them gives a different sum."""
         answer = parse_requirement("CUDA0 12726 285 509\n")
 
-        self.assertNotIn(answer, (card(12726), card(285), card(509)))
+        self.assertNotIn(answer, (card(12726, 0, 0), card(0, 285, 0), card(0, 0, 509)))
 
     def test_trailing_space_does_not_change_the_answer(self):
         """The real output ends each line with a space."""
         self.assertEqual(parse_requirement("CUDA0 12726 285 509 \n"),
-                         card(12726 + 285 + 509))
+                         card(12726, 285, 509))
+
+
+class TheWorkingBuffersAreTheLastNumber(unittest.TestCase):
+    """A prediction head's draft context holds working buffers of its own, and they are
+    measured against the model's on the same device."""
+
+    def test_each_device_keeps_its_own(self):
+        text = "CUDA1 3830 388 371 \nCUDA0 8896 823 711 \n"
+
+        self.assertEqual(NonEmpty(Mib(371), Mib(711)), parse_requirement(text).working)
+
+    def test_they_are_still_part_of_what_the_device_holds(self):
+        answer = parse_requirement("CUDA0 100 20 30\n")
+
+        self.assertEqual(NonEmpty(Mib(150)), answer.cards)
+        self.assertEqual(NonEmpty(Mib(30)), answer.working)
 
 
 class TheHostIsNotTheCard(unittest.TestCase):
@@ -43,12 +60,13 @@ class TheHostIsNotTheCard(unittest.TestCase):
         text = "CUDA0 12726 285 509 \nHost 520 0 24\n"
 
         self.assertEqual(parse_requirement(text),
-                         Needs(cards=NonEmpty(Mib(13520)), host=Mib(544)))
+                         Needs(cards=NonEmpty(Mib(13520)), working=NonEmpty(Mib(509)),
+                               host=Mib(544)))
 
     def test_the_host_is_never_added_to_the_card(self):
         with_host = parse_requirement("CUDA0 100 20 30\nHost 4000 0 0\n")
 
-        self.assertEqual(with_host.cards, card(150).cards)
+        self.assertEqual(with_host.cards, card(100, 20, 30).cards)
 
     def test_the_order_of_the_lines_does_not_matter(self):
         """The estimator prints the host first for some models and last for others."""
@@ -70,13 +88,15 @@ class TheDeviceMayBeCalledAnything(unittest.TestCase):
         """Another build names its device differently, and that is not a refusal."""
         for name in ("CUDA0", "ROCm0", "Vulkan1", "SYCL0"):
             with self.subTest(device=name):
-                self.assertEqual(parse_requirement(f"{name} 100 20 30\n"), card(150))
+                self.assertEqual(parse_requirement(f"{name} 100 20 30\n"),
+                                 card(100, 20, 30))
 
     def test_every_device_line_is_an_answer_in_the_order_printed(self):
         text = "CUDA0 100 20 30\nCUDA1 900 90 9\n"
 
         self.assertEqual(parse_requirement(text),
-                         Needs(cards=NonEmpty(Mib(150), Mib(999)), host=Mib(0)))
+                         Needs(cards=NonEmpty(Mib(150), Mib(999)),
+                               working=NonEmpty(Mib(30), Mib(9)), host=Mib(0)))
 
 
 class ARefusalIsNotANumber(unittest.TestCase):

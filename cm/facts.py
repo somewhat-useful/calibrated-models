@@ -7,12 +7,18 @@ the estimator one will run, so it reports the head's tensors as unused and leave
 out of its total. Their sizes are on those same lines, which is where the head's weight
 comes from, and its own cache costs what one more layer costs.
 
+Nor does it count what a head costs a model whose layers keep a recurrent state. A
+draft can be rejected, a state cannot be cut back the way a cache can, and so the server
+keeps snapshots of the state to roll back to. The loader says, as it allocates the state
+for one sequence, which layers keep one and what it comes to, and that is read here.
+
 Reading is separate from running. This takes text and returns a shape, so it can be
 tested without a GGUF, a card or a subprocess.
 """
 
 import re
 from dataclasses import dataclass
+from fractions import Fraction
 
 from .units import Layers, Tokens
 
@@ -63,11 +69,29 @@ class Head:
 
 
 @dataclass(frozen=True)
+class Stateless:
+    """No layer of the file keeps a recurrent state: every one caches the window."""
+
+
+@dataclass(frozen=True)
+class Recurrent:
+    """Layers that keep a state of fixed size for every sequence, whatever the window.
+
+    mib_per_layer is what one sequence's state costs in each of them. The loader prints
+    the total in hundredths of a MiB, so it is kept exact rather than rounded twice.
+    """
+
+    layers: frozenset[int]
+    mib_per_layer: Fraction
+
+
+@dataclass(frozen=True)
 class ModelFacts:
     n_expert: int
     n_layer: Layers
     n_ctx_train: Tokens
     head: NoHead | Head
+    state: Stateless | Recurrent = Stateless()
 
 
 # Whitespace before the '=' is what separates a field from the longer names it is a
@@ -94,10 +118,37 @@ def _head(text: str) -> NoHead | Head:
                 + _scalar(text, "n_embd_v_gqa"))
 
 
+# A layer given a recurrent state, and what the states of one sequence come to on a device.
+# A layer that keeps none is printed as skipped, and is not matched.
+_STATEFUL = re.compile(r"llama_memory_recurrent, layer\s+(\d+): dev = ")
+_STATE_BUFFER = re.compile(
+    r"llama_memory_recurrent:\s+\S+ RS buffer size =\s+(\d+(?:\.\d+)?) MiB")
+
+
+def _state(text: str) -> Stateless | Recurrent:
+    """Which layers keep a recurrent state, and what one sequence's costs each of them.
+
+    A file with no recurrent layers prints neither kind of line. One kind without the
+    other is output this was not written for, and a guess would misprice every head.
+    """
+    layers = frozenset(int(found) for found in _STATEFUL.findall(text))
+    sizes = [Fraction(found) for found in _STATE_BUFFER.findall(text)]
+
+    if not layers and not sizes:
+        return Stateless()
+    if not layers:
+        raise MissingFact("llama_memory_recurrent layer")
+    if not sizes:
+        raise MissingFact("RS buffer size")
+
+    return Recurrent(layers=layers, mib_per_layer=sum(sizes, Fraction(0)) / len(layers))
+
+
 def parse_facts(text: str) -> ModelFacts:
     return ModelFacts(
         n_expert=_scalar(text, "n_expert"),
         n_layer=Layers(_scalar(text, "n_layer")),
         n_ctx_train=Tokens(_scalar(text, "n_ctx_train")),
         head=_head(text),
+        state=_state(text),
     )

@@ -15,8 +15,8 @@ from dataclasses import dataclass
 from .config import Config, ConfigError, Model, Value
 from .machine import Machine, SystemMemory, threads
 from .name import Profile
-from .place import (NO_TENSOR, Among, ExpertsOnCpu, Layout, Settings, device_name,
-                    endpoints, holds, micro_batch, runs_apart_by_override)
+from .place import (DRAFT_LOOKAHEAD, NO_TENSOR, Among, ExpertsOnCpu, Layout, Settings,
+                    device_name, endpoints, holds, micro_batch, runs_apart_by_override)
 from .rpc import written
 from .units import Mib
 
@@ -41,9 +41,6 @@ REQUIRED = "VRAM REQUIRED"
 # moves experts with n-cpu-moe rather than by keeping layers off the card, so this never
 # varies. 99 is how llama.cpp spells "all of them".
 GPU_LAYERS = 99
-
-# How many tokens a prediction head drafts before the model verifies them.
-DRAFT_LOOKAHEAD = 3
 
 
 @dataclass(frozen=True)

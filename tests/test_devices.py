@@ -68,16 +68,25 @@ def law(facts, per_token_compute=0.00001, together=1.6):
         layout = question.layout
         micro = place.micro_batch(UBATCH, layout.halvings)
         counts = [*layout.layers[:-1], layout.layers[-1] - trailing]
-        rows, host, start = [], 0, 0
+        rows, works, host, start = [], [], 0, 0
         for position, count in enumerate(counts):
             need, held = row(question, start, count, position == len(counts) - 1, micro,
                              per_token_compute, together)
             rows.append(Mib(round(need)))
+            works.append(Mib(round(working(question, micro, per_token_compute, together))))
             host += held
             start += count
-        return Needs(cards=NonEmpty(*rows), host=Mib(round(host)))
+        return Needs(cards=NonEmpty(*rows), working=NonEmpty(*works),
+                     host=Mib(round(host)))
 
     return answer
+
+
+def working(question, micro, per_token_compute=0.00001, together=1.6):
+    """One device's working buffers, larger where the cards run pieces of a prompt at
+    once."""
+    factor = together if question.layout.pipeline is Pipeline.ON else 1.0
+    return factor * (micro * 0.25 + (0.004 + micro * per_token_compute) * question.ctx)
 
 
 def row(question, start, count, last, micro, per_token_compute=0.00001, together=1.6):
@@ -87,12 +96,11 @@ def row(question, start, count, last, micro, per_token_compute=0.00001, together
     moved = max(0, min(start + count, offloaded) - start)
     attention = sum(1 for index in range(start, start + count) if index % 4 == 3)
     share = question.cache.bytes_per_element / CacheType.Q8_0.bytes_per_element
-    factor = together if question.layout.pipeline is Pipeline.ON else 1.0
 
     need = (count * BLOCK - moved * EXPERTS
             + attention * ATTENTION_PER_TOKEN * question.ctx * share
             + (count - attention) * STATE
-            + factor * (micro * 0.25 + (0.004 + micro * per_token_compute) * question.ctx))
+            + working(question, micro, per_token_compute, together))
     if last:
         need += OUTPUT
     return need, moved * EXPERTS
@@ -318,10 +326,12 @@ class TheCoarseCacheAndTheHeadFollowTheCards(unittest.TestCase):
 
         self.assertEqual([CacheType.Q4_0], [one.cache for one in chosen])
 
-    def test_a_second_card_buys_the_fine_cache_and_never_a_coarse_one(self):
+    def test_with_a_second_card_the_fine_cache_is_placed_across_cards_never_coarsened(self):
+        """The fine cache does not fit on the fastest card: alone it would take the
+        coarse one, beside a second card the model is placed on both instead."""
         chosen, _ = run(TIGHT, local(two(fast=7850, slow=8192)), law(TIGHT))
 
-        self.assertEqual([(1, CacheType.Q4_0), (2, CacheType.Q8_0)],
+        self.assertEqual([(2, CacheType.Q8_0)],
                          [(len(one.layout.devices), one.cache) for one in chosen])
 
     def test_no_chain_of_several_devices_is_ever_asked_about_a_coarse_cache(self):

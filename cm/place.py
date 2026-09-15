@@ -43,13 +43,14 @@ speed, so a chain is worth profiles of its own only for the window it buys, and 
 profiles add up rather than replace one another.
 """
 
+import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from fractions import Fraction
 
 from .estimate import Needs, Refused, Requirement
-from .facts import Head, ModelFacts
+from .facts import Head, ModelFacts, Recurrent, Stateless
 from .machine import CudaIndex, Installed
 from .nonempty import NonEmpty
 from .units import Halvings, Layers, Mib, Port, Tokens
@@ -118,6 +119,11 @@ WORTH_RUNNING_APART = Fraction(13, 10)
 # A tensor name nothing in a model is called. Telling llama.cpp where to put it moves
 # nothing, and any such override at all is what turns its pipeline parallelism off.
 NO_TENSOR = "no-tensor-is-called-this"
+
+# How many tokens a prediction head drafts before the model verifies them. For every one
+# the server keeps a snapshot of each recurrent layer's state beside the state itself, so
+# that a rejected draft can be rolled back.
+DRAFT_LOOKAHEAD = 3
 
 
 class CacheType(Enum):
@@ -480,13 +486,39 @@ def requirement(facts: ModelFacts, variant: Variant, ctx: Tokens,
                 answer: Needs) -> NonEmpty[Mib]:
     """What the estimator counted on each device, plus what it was never told to count.
 
-    The head is the last layer of the model, so it is counted on the last device.
+    The head is the last layer of the model, so it is counted on the last device: its
+    weights and its cache, and the working buffers of the draft context it runs there,
+    which are never larger than the model's own on that device as the estimator counts
+    them. What a head costs in snapshots of recurrent state depends on where those layers
+    are, and is `snapshots`.
     """
     if not variant.head:
         return answer.cards
 
     *before, last = answer.cards
-    return NonEmpty(*before, Mib(last + head_cost(facts, variant.cache, ctx)))
+    drafting = head_cost(facts, variant.cache, ctx) + answer.working.last
+    return NonEmpty(*before, Mib(last + drafting))
+
+
+def snapshots(facts: ModelFacts, variant: Variant, layout: Layout) -> NonEmpty[Mib]:
+    """What a head costs each device in snapshots of recurrent state: one for every token
+    it drafts, of every layer on that device that keeps a state. Nothing without a head,
+    and nothing for a model whose layers keep none."""
+    counts = [*layout.layers[:-1], layout.layers.last - _trailing(facts)]
+    starts = [sum(counts[:position]) for position in range(len(counts))]
+
+    first, *rest = (_snapshots(facts, variant, range(start, start + count))
+                    for start, count in zip(starts, counts))
+    return NonEmpty(first, *rest)
+
+
+def _snapshots(facts: ModelFacts, variant: Variant, blocks: range) -> Mib:
+    match facts.state:
+        case Recurrent(layers, mib_per_layer) if variant.head:
+            kept = sum(1 for block in blocks if block in layers)
+            return Mib(math.ceil(DRAFT_LOOKAHEAD * mib_per_layer * kept))
+        case Recurrent() | Stateless():
+            return Mib(0)
 
 
 def _ceiling(facts: ModelFacts) -> Tokens:
@@ -586,9 +618,11 @@ def settings(facts: ModelFacts, allowed: Allowed, limits: Limits,
     profiles add up: the fastest card alone, then each device added where it buys window.
     """
     points = grid(facts, limits)
-    if not points:
+    every = variants(facts, allowed)
+    if not points or not every:
         return ()
 
+    finest = every[0].cache
     kept: list[Settings] = []
     reached: dict[Variant, Tokens] = {}
     for position in range(len(limits.chains)):
@@ -609,12 +643,13 @@ def settings(facts: ModelFacts, allowed: Allowed, limits: Limits,
                 case _Ask() | _Nothing():
                     pass
 
-        kept.extend(_worth_offering(chosen, limits))
+        kept.extend(_worth_offering(chosen, limits, finest))
 
     return tuple(kept)
 
 
-def _worth_offering(chosen: list[Settings], limits: Limits) -> tuple[Settings, ...]:
+def _worth_offering(chosen: list[Settings], limits: Limits,
+                    finest: CacheType) -> tuple[Settings, ...]:
     """Without the coarser caches that bought nothing worth having.
 
     A coarser attention cache is precision given up, and what it can buy is window. It
@@ -622,7 +657,9 @@ def _worth_offering(chosen: list[Settings], limits: Limits) -> tuple[Settings, .
     Once the window is ample there is nothing left to buy, and two profiles differing
     only in how exactly they hold the same conversation are not a choice anyone can
     make. Where the finer cache did not fit at all, there is nothing to compare against
-    and the coarser one stands -- it is what makes the model servable.
+    and the coarser one stands -- it is what makes the model servable on a machine with
+    one card. On a machine with more, it does not stand in: the cards after the first are
+    what place such a model, and where they cannot it is not placed.
     """
     kept = []
     for head in (False, True):
@@ -632,6 +669,9 @@ def _worth_offering(chosen: list[Settings], limits: Limits) -> tuple[Settings, .
                 if settings.head is not head or settings.cache is not cache:
                     continue
                 if longest >= limits.ample_ctx or settings.ctx <= longest:
+                    continue
+                if (longest == 0 and cache is not finest
+                        and limits.among is Among.SEVERAL):
                     continue
                 longest = settings.ctx
                 kept.append(settings)
@@ -658,7 +698,7 @@ def resident(chosen: Sequence[Settings],
         if question not in answers:
             continue
         match answers[question]:
-            case Needs(_, host):
+            case Needs(host=host):
                 most = max(most, host)
             case Refused():
                 pass
@@ -1186,7 +1226,8 @@ def _question(facts: ModelFacts, search: _Search, point: Point,
 def _needed(facts: ModelFacts, search: _Search, point: Point, question: Question,
             answers: Mapping[Question, Requirement]
             ) -> NonEmpty[Mib] | _Ask | _Unanswerable:
-    """What a question's answer says each device needs, the head counted in."""
+    """What a question's answer says each device needs, the head and what it keeps to
+    roll a draft back counted in."""
     if question not in answers:
         return _Ask(question)
 
@@ -1197,4 +1238,7 @@ def _needed(facts: ModelFacts, search: _Search, point: Point, question: Question
             # An answer about other devices than the ones asked about is no answer.
             return _Unanswerable()
         case Needs() as answer:
-            return requirement(facts, search.variant, point.ctx, answer)
+            held = requirement(facts, search.variant, point.ctx, answer)
+            kept = snapshots(facts, search.variant, question.layout)
+            first, *rest = (Mib(amount + snapshot) for amount, snapshot in zip(held, kept))
+            return NonEmpty(first, *rest)

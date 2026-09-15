@@ -38,5 +38,6 @@ def chains(total: Mib, reserve: Mib) -> NonEmpty[Chain]:
 
 
 def needs(card: Mib, host: Mib) -> Needs:
-    """An answer from the estimator about one card."""
-    return Needs(cards=NonEmpty(card), host=host)
+    """An answer from the estimator about one card. Its working buffers are left inside
+    the card's figure rather than told apart, so a head drafts for nothing here."""
+    return Needs(cards=NonEmpty(card), working=NonEmpty(Mib(0)), host=host)
