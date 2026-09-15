@@ -107,6 +107,7 @@ def _arguments(argv: Sequence[str]) -> argparse.Namespace:
 
 
 def _llamacpp(given: argparse.Namespace, said: Sequence[str]) -> int:
+    _on_windows("llamacpp")
     engine.install(given.settings, given.check, given.force)
     return 0
 
@@ -116,12 +117,21 @@ def _pi(given: argparse.Namespace, said: Sequence[str]) -> int:
     return 0
 
 
+def _on_windows(what: str) -> None:
+    """llama.cpp is installed from the builds published for Windows, so a command that
+    installs it refuses anywhere else before it downloads or changes anything."""
+    if sys.platform != "win32":
+        raise Refusal(f"install {what} installs the Windows build of llama.cpp, and this is "
+                      f"{sys.platform}. What installs here: python -m cm.install pi")
+
+
 def _slave(given: argparse.Namespace, said: Sequence[str]) -> int:
     """This machine made a slave: a release, the worker at boot, and its port admitted.
 
     Asked for the rights before anything is done, so that the elevated run is the one
     that does the whole of it. A preview asks for nothing: it changes nothing.
     """
+    _on_windows("slave")
     port = Port(given.port)
     settings: Path = given.settings.resolve()
     started = task.Runs(command=Path(sys.executable),

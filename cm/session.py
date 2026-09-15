@@ -15,6 +15,10 @@ belonging to the applications drawing through it -- but that is dealt with where
 crediting is decided, not here.
 """
 
+# Annotations are left unevaluated: they name ctypes.WinDLL, which exists only on
+# Windows, and this module is imported on every system even where none of it is called.
+from __future__ import annotations
+
 import ctypes
 import os
 import re
@@ -120,7 +124,11 @@ class _Tcp6Listener(ctypes.Structure):
                 ("state", wintypes.DWORD), ("pid", wintypes.DWORD)]
 
 
-_ENUM_WINDOWS = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+def _enum_windows() -> type:
+    """The callback EnumWindows is handed. Made when it is needed rather than at import:
+    the calling convention it names exists only on Windows. ctypes hands back the same
+    type every time it is asked."""
+    return ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
 
 
 def _user32() -> ctypes.WinDLL:
@@ -132,7 +140,7 @@ def _user32() -> ctypes.WinDLL:
     """
     library = ctypes.WinDLL("user32", use_last_error=True)
 
-    library.EnumWindows.argtypes = [_ENUM_WINDOWS, wintypes.LPARAM]
+    library.EnumWindows.argtypes = [_enum_windows(), wintypes.LPARAM]
     library.IsWindowVisible.argtypes = [wintypes.HWND]
     library.GetWindowTextLengthW.argtypes = [wintypes.HWND]
     library.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
@@ -741,7 +749,7 @@ def _windowed() -> frozenset[Pid]:
             found.add(_owner(user32, handle))
         return True
 
-    user32.EnumWindows(_ENUM_WINDOWS(visit), 0)
+    user32.EnumWindows(_enum_windows()(visit), 0)
     return frozenset(found)
 
 
@@ -755,7 +763,7 @@ def _handles(user32: ctypes.WinDLL, pid: Pid) -> tuple[int, ...]:
             found.append(handle)
         return True
 
-    user32.EnumWindows(_ENUM_WINDOWS(visit), 0)
+    user32.EnumWindows(_enum_windows()(visit), 0)
     return tuple(found)
 
 

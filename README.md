@@ -70,7 +70,7 @@ scheduler, ask netsh to admit the worker's port, and start and stop Windows proc
 `install master` reads no card and needs no rights: it writes the settings file on the
 router's machine and knocks once on the slave's port.
 
-`install`, `models` and `pi` have none of that. One runs npm and pi, one looks in the
+`install pi`, `models` and `pi` have none of that. One runs npm and pi, one looks in the
 library and asks Hugging Face what its repositories hold, and one speaks HTTP to the
 router and writes two JSON files. All three run on **Windows, macOS and Linux** alike —
 which is the shape of the thing: one machine holds the card, any number of machines call
