@@ -17,7 +17,8 @@ A mixture of experts is the opposite. Its experts are read a few per token, so l
 some in system memory costs a bounded amount of speed and returns a large amount of
 memory. The window stays where it is -- a mixture is worth its size for the window it
 holds, and one cut short is a worse dense model -- and the count of offloaded layers is
-the lever.
+the lever. System memory is still slower than any card, so where the machine has
+several, experts go there only once every card holds layers.
 
 Both levers are searched rather than solved. What a configuration needs moves in one
 direction along its lever and never turns back, which is all a search needs, and it is
@@ -419,10 +420,13 @@ def _reserve(card: Installed, several: bool, reserves: Reserves) -> Mib:
 
 def limits_for(chains: NonEmpty[Chain], ubatch: int, min_ctx: Tokens,
                ample_ctx: Tokens) -> Limits:
-    own = max(sum(1 for seat in chain if isinstance(seat.device, Local))
-              for chain in chains)
+    own = max(_own_cards(chain) for chain in chains)
     return Limits(chains=chains, ubatch=ubatch, min_ctx=min_ctx, ample_ctx=ample_ctx,
                   among=Among.ONE if own == 1 else Among.SEVERAL)
+
+
+def _own_cards(chain: Chain) -> int:
+    return sum(1 for seat in chain if isinstance(seat.device, Local))
 
 
 def holds(settings: Settings) -> NonEmpty[Mib]:
@@ -620,6 +624,10 @@ def settings(facts: ModelFacts, allowed: Allowed, limits: Limits,
     Every device a chain adds costs speed, so a placement on a chain is kept only where
     its window is longer than every chain before it settled on for the same variant. The
     profiles add up: the fastest card alone, then each device added where it buys window.
+
+    System memory costs a mixture more speed than any card does, so a chain that leaves a
+    card of the machine out keeps no placement with experts in system memory: the chain
+    with that card places the mixture instead.
     """
     points = grid(facts, limits)
     every = variants(facts, allowed)
@@ -634,14 +642,16 @@ def settings(facts: ModelFacts, allowed: Allowed, limits: Limits,
         for variant, found in _searched(facts, allowed, limits, position, points, answers):
             match found:
                 case _Chosen(index, known):
-                    window = points[index].ctx
-                    if variant in reached and window <= reached[variant]:
+                    point = points[index]
+                    if _offloads_before_every_card(limits, position, point.placement):
                         continue
-                    reached[variant] = window
-                    chosen.append(Settings(ctx=window,
+                    if variant in reached and point.ctx <= reached[variant]:
+                        continue
+                    reached[variant] = point.ctx
+                    chosen.append(Settings(ctx=point.ctx,
                                            cache=variant.cache,
                                            head=variant.head,
-                                           placement=points[index].placement,
+                                           placement=point.placement,
                                            spare=known.spare,
                                            layout=known.arranged.layout))
                 case _Ask() | _Nothing():
@@ -681,6 +691,18 @@ def _worth_offering(chosen: list[Settings], limits: Limits,
                 kept.append(settings)
 
     return tuple(kept)
+
+
+def _offloads_before_every_card(limits: Limits, position: int,
+                                placement: Placement) -> bool:
+    """Whether a placement leaves experts in system memory on a chain that leaves a card
+    of this machine out."""
+    match placement:
+        case ExpertsOnCpu(layers) if layers > 0:
+            every = max(_own_cards(chain) for chain in limits.chains)
+            return _own_cards(limits.chains[position]) < every
+        case ExpertsOnCpu() | WholeCard():
+            return False
 
 
 def resident(chosen: Sequence[Settings],

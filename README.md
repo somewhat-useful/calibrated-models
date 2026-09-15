@@ -685,7 +685,7 @@ The settings file is yours and is not in the repository. The template is.
 | which cards a profile runs on | the fastest card alone first, then each card added in front of it, then a slave's card, each only where it holds a longer window than every one before |
 | the attention cache | `q8_0`, with `q4_0` beside it only on a card alone while `q8_0` holds less than `ample_ctx_tokens` there -- or instead of it, where `q8_0` does not fit a machine's only card |
 | whether a prediction head runs | both ways on a machine with one card; with a second card, always where the file carries one |
-| how many expert layers of a mixture stay in system memory | the same search, along the other lever |
+| how many expert layers of a mixture stay in system memory | the same search, along the other lever -- and with several cards, none until every card holds layers of it |
 | how many layers each card holds, where there are several | laid out from the fastest card back, each taking layers while that brings it nearer its reserve |
 | the micro-batch a profile runs at | `ubatch-size` from `[shared]`, halved down to 128 only where the window it buys is worth the prefill it costs |
 | whether several cards run pieces of a prompt at once | yes, unless the window without it is at least 30% longer |
@@ -715,13 +715,16 @@ With a 16 GiB card driving the monitors and an 8 GiB one beside it, `qwen3.8` ge
 `qwen3.8-110k-q8-mtp` across both, while `gemma4-12b`, which holds its whole trained
 window on the 16 GiB card, gets that one profile and nothing across two.
 
-Two rules follow the cards. Where the machine has a second card, every profile runs the
-prediction head a file carries: dropping it would buy window the second card buys
-better. And a coarser `q4_0` cache is offered only on a card alone, beside `q8_0` while
+Three rules follow the cards. Where the machine has a second card, every profile runs
+the prediction head a file carries: dropping it would buy window the second card buys
+better. A coarser `q4_0` cache is offered only on a card alone, beside `q8_0` while
 `q8_0` holds less than `ample_ctx_tokens` there; a profile across several devices is
 always `q8_0`. A model whose `q8_0` does not fit on the fastest card at all gets a
 `q4_0` profile of that card only on a machine with one card -- with several, it is
-placed across the cards or not at all.
+placed across the cards or not at all. And experts read from system memory are slower
+than on any card, so a mixture the fastest card cannot hold whole is not offloaded
+there: it is placed across the cards after it, and only once every card of the machine
+holds layers of it do experts stay in system memory.
 
 The cards of a profile run slowest first, the order they were added in reversed, and a
 model's layers pass through them in that order. The last card is the one that works

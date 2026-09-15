@@ -452,6 +452,48 @@ class ASecondCardIsWindow(unittest.TestCase):
         self.assertTrue(both)
 
 
+class AMixtureFillsEveryCardBeforeSystemMemory(unittest.TestCase):
+    """Experts read from system memory are slower than on any card, so a mixture leaves
+    experts off the cards only once every card of the machine holds layers of it."""
+
+    def test_a_mixture_the_fastest_card_holds_whole_runs_there_alone(self):
+        chosen, _ = run(MIXTURE, local(two()), law(MIXTURE))
+
+        self.assertEqual([((Local(CudaIndex(0), Mib(16303)),), ExpertsOnCpu(Layers(0)))],
+                         [(tuple(one.layout.devices), one.placement) for one in chosen])
+
+    def test_what_the_fastest_card_alone_would_offload_goes_on_the_next_card_instead(self):
+        answer = law(MIXTURE)
+        alone, _ = run(MIXTURE, local(NonEmpty(two(fast=12288).first)), answer)
+        both, _ = run(MIXTURE, local(two(fast=12288)), answer)
+
+        self.assertTrue(alone)
+        self.assertTrue(all(one.placement.layers > 0 for one in alone))
+        self.assertEqual([(2, ExpertsOnCpu(Layers(0)))],
+                         [(len(one.layout.devices), one.placement) for one in both])
+
+    def test_no_card_is_left_out_while_experts_are_in_system_memory(self):
+        machines = (two(fast=12288), two(fast=8192, slow=6144),
+                    NonEmpty(card(0, 8192, Capability(12, 0), True),
+                             card(1, 6144, Capability(8, 6), False),
+                             card(2, 6144, Capability(7, 5), False)))
+
+        offloaded = []
+        for cards in machines:
+            chosen, _ = run(MIXTURE, local(cards, (WORKER,)), law(MIXTURE))
+
+            self.assertTrue(chosen)
+            for settings in chosen:
+                if settings.placement.layers == 0:
+                    continue
+                offloaded.append(settings)
+                own = sum(1 for one in settings.layout.devices if isinstance(one, Local))
+                with self.subTest(cards=len(cards), devices=settings.layout.devices):
+                    self.assertEqual(len(cards), own)
+
+        self.assertTrue(offloaded)
+
+
 class AHalvingOfTheMicroBatchHasToBuyItsShareOfWindow(unittest.TestCase):
     """What the ladder settles on, against every rung of it searched on its own."""
 
