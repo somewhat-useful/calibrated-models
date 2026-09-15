@@ -686,7 +686,7 @@ The settings file is yours and is not in the repository. The template is.
 | the attention cache | `q8_0`, with `q4_0` beside it only on a card alone while `q8_0` holds less than `ample_ctx_tokens` there -- or instead of it, where `q8_0` does not fit a machine's only card |
 | whether a prediction head runs | both ways on a machine with one card; with a second card, always where the file carries one |
 | how many expert layers of a mixture stay in system memory | the same search, along the other lever |
-| how many layers each card holds, where there are several | laid out from the newest card back, each taking layers while that brings it nearer its reserve |
+| how many layers each card holds, where there are several | laid out from the fastest card back, each taking layers while that brings it nearer its reserve |
 | the micro-batch a profile runs at | `ubatch-size` from `[shared]`, halved down to 128 only where the window it buys is worth the prefill it costs |
 | whether several cards run pieces of a prompt at once | yes, unless the window without it is at least 30% longer |
 | `threads` and `threads-batch` | the logical processors of the fastest cores. Not all of them: the thread pool is synchronised by a barrier, so work spread onto slow cores is work the rest wait for |
@@ -700,13 +700,15 @@ fits *right now* is a different question, and that is what
 ## Several cards, and a card lent over the network
 
 **Several cards in the machine** need nothing set. `calibrate` reads every card
-`nvidia-smi` lists and adds them one at a time, the fastest first. The fastest card alone
-is placed first, exactly as a machine with only that card would be: those are the
-quickest profiles, with the compromises one card makes. Then the next card is added in
-front of it, and a profile across both is written only where it holds a longer window
-than the fastest card alone did for the same cache and head. Every card added costs
-speed, so it has to buy window; the profiles add up, and which to load is chosen by name.
-A slave's card is the last one added.
+`nvidia-smi` lists and adds them one at a time, the fastest first. Nothing a card reports
+says how fast it is, so the latest generation stands for the fastest, and of one
+generation the card with more memory goes first; whether a monitor is plugged into it
+decides nothing. The fastest card alone is placed first, exactly as a machine with only
+that card would be: those are the quickest profiles, with the compromises one card
+makes. Then the next card is added in front of it, and a profile across both is written
+only where it holds a longer window than the fastest card alone did for the same cache
+and head. Every card added costs speed, so it has to buy window; the profiles add up, and
+which to load is chosen by name. A slave's card is the last one added.
 
 With a 16 GiB card driving the monitors and an 8 GiB one beside it, `qwen3.8` gets
 `qwen3.8-25k-q8-mtp` and `qwen3.8-37k-q4-mtp` on the 16 GiB card alone and
@@ -721,9 +723,10 @@ always `q8_0`. A model whose `q8_0` does not fit on the fastest card at all gets
 `q4_0` profile of that card only on a machine with one card -- with several, it is
 placed across the cards or not at all.
 
-The cards of a profile run in order of generation, the oldest first, and a model's layers
-pass through them in that order. The last card is the one that works hardest -- it takes
-the most layers, the output and the prediction head -- so it is the newest. The layers are
+The cards of a profile run slowest first, the order they were added in reversed, and a
+model's layers pass through them in that order. The last card is the one that works
+hardest -- it takes the most layers, the output and the prediction head -- so it is the
+fastest. The layers are
 laid out from that end: the last card takes blocks for as long as each one brings what it
 leaves free nearer its reserve, the card before it does the same with what remains, and
 the first card takes the rest. Every card of a profile holds at least one block.

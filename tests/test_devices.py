@@ -149,6 +149,20 @@ class TheChainsAddTheMachinesCardsOneAtATimeThenTheSlave(unittest.TestCase):
                           [CudaIndex(0), CudaIndex(2), CudaIndex(1)]],
                          [[seat.device.index for seat in chain] for chain in local(three)])
 
+    def test_of_one_generation_the_card_with_more_memory_is_alone_first(self):
+        same = NonEmpty(card(0, 8192, Capability(12, 0), True),
+                        card(1, 16303, Capability(12, 0), False))
+
+        self.assertEqual([[CudaIndex(1)], [CudaIndex(0), CudaIndex(1)]],
+                         [[seat.device.index for seat in chain] for chain in local(same)])
+
+    def test_a_later_generation_goes_first_whatever_the_memory_or_the_monitor(self):
+        mixed = NonEmpty(card(0, 24576, Capability(8, 6), True),
+                         card(1, 8192, Capability(8, 9), False))
+
+        self.assertEqual([CudaIndex(1)],
+                         [seat.device.index for seat in local(mixed).first])
+
     def test_the_fastest_card_alone_is_left_what_a_machines_only_card_is(self):
         self.assertEqual(Mib(1024), local(two()).first.first.reserve)
 

@@ -380,17 +380,21 @@ def chains(cards: NonEmpty[Installed], workers: Sequence[Worker],
     """Every chain of devices a model is placed across on this machine, in the order
     they are tried.
 
-    The machine's own cards are added one at a time, the latest generation first: the
-    first chain is that card alone, and each after it puts the next card in front of the
-    chain before. A chain is filled from its end, so the last card holds the most layers
-    and the output and the head besides, and the fastest card is the one to give them
-    to. Then, for each slave, all of the machine's cards behind its card: reached over
-    the network, it is slower than any of them, and it goes first.
+    The machine's own cards are added one at a time, the fastest first: the first chain
+    is that card alone, and each after it puts the next card in front of the chain
+    before. Nothing a card reports says how fast it is, so the latest generation stands
+    for the fastest, and between cards of one generation the one with more memory goes
+    first. Whether a monitor is plugged in decides nothing about the order. A chain is
+    filled from its end, so the last card holds the most layers and the output and the
+    head besides, and the fastest card is the one to give them to. Then, for each slave,
+    all of the machine's cards behind its card: reached over the network, it is slower
+    than any of them, and it goes first.
 
     What a card is left depends on the chain. Alone it is left what a machine's only
     card is left; beside other cards, what a card with a monitor, or without one, is.
     """
-    latest_first = sorted(cards, key=lambda one: (one.capability, -one.index),
+    latest_first = sorted(cards,
+                          key=lambda one: (one.capability, one.card.total, -one.index),
                           reverse=True)
 
     levels = []
