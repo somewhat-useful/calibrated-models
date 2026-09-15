@@ -18,7 +18,7 @@ from fractions import Fraction
 from cm import place
 from cm.estimate import Needs, Refused
 from cm.facts import Head, ModelFacts, NoHead
-from cm.machine import Capability, Card, CudaIndex, Installed
+from cm.machine import Capability, Card, CudaIndex, Installed, PciAddress
 from cm.nonempty import NonEmpty
 from cm.place import (WINDOWS_SHARE, CacheType, Endpoint, ExpertsOnCpu, Local, Pipeline,
                       Remote, Reserves, Worker)
@@ -51,7 +51,8 @@ WORKER = Worker(endpoint=Endpoint("worker", Port(50052)), memory=Mib(12288),
 
 def card(index, total, capability, display) -> Installed:
     return Installed(index=CudaIndex(index), card=Card(f"card {index}", Mib(total)),
-                     capability=capability, drives_display=display)
+                     capability=capability, drives_display=display,
+                     address=PciAddress(index + 1, 0, 0))
 
 
 def two(fast=16303, slow=8192) -> NonEmpty[Installed]:
@@ -298,7 +299,8 @@ class ADeviceIsAddedOnlyForTheWindowItBuys(unittest.TestCase):
 
             with self.subTest(facts=facts):
                 self.assertEqual(list(without),
-                                 [one for one in with_slave if not place.endpoints(one.layout)])
+                                 [one for one in with_slave
+                                  if not place.endpoints(one.layout)])
 
 
 class TheCoarseCacheAndTheHeadFollowTheCards(unittest.TestCase):

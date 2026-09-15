@@ -240,9 +240,9 @@ class Among(Enum):
 class Layout:
     """Where the layers of one configuration go, and the micro-batch they run at.
 
-    devices are in the order the layers run through them. layers counts per device the way the loader counts: the model's blocks, and on the
-    last device also the output and a prediction head's block. The last device is the one
-    that carries both.
+    devices are in the order the layers run through them. layers counts per device the
+    way the loader counts: the model's blocks, and on the last device also the output and
+    a prediction head's block. The last device is the one that carries both.
     """
 
     devices: NonEmpty[Device]

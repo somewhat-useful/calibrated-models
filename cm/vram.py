@@ -2,6 +2,8 @@
 
 The loop here decides nothing. It reads the preset once, the card and the session on
 every pass, hands them to the screen, draws what comes back and waits for the next key.
+The card is the one a desktop is drawn on: what holds any other is nothing a person
+closes a window to give back.
 What each profile costs was decided by calibrate and travels in the preset; what to give
 up first is worked out in `advise`; where the memory belongs, and what the router is
 holding on the next model's behalf, in `desktop`.
@@ -31,7 +33,10 @@ from . import advise, catalog, desktop, devices, files, reading, screen, session
 from .advise import Holder, Pid, Room, Unoffered
 from .catalog import Loadable
 from .config import ConfigError
-from .machine import UnreadableDevice
+from .machine import (Installed, NoDesktopCard, SeveralDesktopCards, UnreadableDevice,
+                      desktop_card)
+from .nonempty import NonEmpty
+from .place import Local, device_name
 from .screen import DOWN, MARK, NEXT, PREV, STAY, UP, Line, Rows
 from .units import Mib
 
@@ -142,13 +147,16 @@ def _watch(settings: Path) -> None:
     if not files.exists(preset):
         raise ConfigError(f"{preset.name} not found at {preset}; run calibrate")
 
-    offered = catalog.parse(files.read(preset))
+    card = _watched(devices.cards())
+    offered = catalog.parse(files.read(preset),
+                            device_name(Local(card.index, card.card.total)))
+    adapter = session.adapter(card.address)
     _accept_escapes()
     keyboard = _keyboard()
     ours = Pid(os.getpid())
 
-    running = session.running()
-    chosen = screen.opens_on(desktop.available(devices.occupancy().first.free, running),
+    running = session.running(adapter)
+    chosen = screen.opens_on(desktop.available(devices.occupancy(card.index).free, running),
                              offered)
 
     at = 0
@@ -156,8 +164,8 @@ def _watch(settings: Path) -> None:
     propose = True
 
     while True:
-        running = session.running()
-        occupancy = devices.occupancy().first
+        running = session.running(adapter)
+        occupancy = devices.occupancy(card.index)
         holders = desktop.holders(running, ours)
         available = desktop.available(occupancy.free, running)
 
@@ -186,7 +194,7 @@ def _watch(settings: Path) -> None:
                 session.close(pid)
             for pid in closing.ended:
                 session.end(pid)
-            _gone(closing.asked | closing.ended)
+            _gone(closing.asked | closing.ended, adapter)
             # What was asked for has been asked for. What that leaves is a new question,
             # and its answer is a fresh proposal rather than the old one minus.
             propose = True
@@ -200,6 +208,21 @@ def _watch(settings: Path) -> None:
             picked = screen.picked(chosen, key, offered)
             propose = picked != chosen
             chosen = picked
+
+
+def _watched(cards: NonEmpty[Installed]) -> Installed:
+    """The card this screen is about, or the one line saying why there is none."""
+    match desktop_card(cards):
+        case Installed() as card:
+            return card
+        case NoDesktopCard():
+            raise UnreadableDevice(
+                f"None of this machine's {len(cards)} cards has a monitor plugged in, so "
+                "no desktop is holding one that closing a window would give back.")
+        case SeveralDesktopCards(count):
+            raise UnreadableDevice(
+                f"{count} cards on this machine have monitors plugged in, and vram "
+                "watches the one card a desktop is drawn on.")
 
 
 def _proposed(available: Mib, chosen: Loadable,
@@ -219,7 +242,7 @@ def _under(holders: Sequence[Holder], at: int) -> Pid:
     return holders[at].pid if holders else Pid(0)
 
 
-def _gone(pids: frozenset[Pid]) -> None:
+def _gone(pids: frozenset[Pid], adapter: session.Adapter) -> None:
     """Wait for the programs that were asked to close to actually be gone.
 
     WM_CLOSE is a request and an application takes its time answering it, sometimes to
@@ -231,7 +254,7 @@ def _gone(pids: frozenset[Pid]) -> None:
     deadline = time.monotonic() + PATIENCE
 
     while pids and time.monotonic() < deadline:
-        if not pids & {one.pid for one in session.running()}:
+        if not pids & {one.pid for one in session.running(adapter)}:
             return
         time.sleep(GLANCE)
 

@@ -14,8 +14,8 @@ from pathlib import Path
 
 from . import lmstudio
 from .lmstudio import Found, Library, Missing
-from .machine import (CARD_FIELDS, Core, Installed, Machine, Occupancy, UnreadableDevice,
-                      parse_cards, parse_occupancy)
+from .machine import (CARD_FIELDS, Core, CudaIndex, Installed, Machine, Occupancy,
+                      UnreadableDevice, parse_cards, parse_occupancy)
 from .nonempty import NonEmpty
 from .proc import run
 from .units import Mib
@@ -79,14 +79,15 @@ def cards() -> NonEmpty[Installed]:
     return parse_cards(done.out)
 
 
-def occupancy() -> NonEmpty[Occupancy]:
-    """Every card and how much of it is free at this moment."""
-    done = run(("nvidia-smi", "--query-gpu=memory.total,memory.free,name",
+def occupancy(index: CudaIndex) -> Occupancy:
+    """One card, and how much of it is free at this moment."""
+    done = run(("nvidia-smi", f"--id={index}",
+                "--query-gpu=memory.total,memory.free,name",
                 "--format=csv,noheader,nounits"))
     if not done.out.strip():
         raise UnreadableDevice(f"nvidia-smi said nothing: {done.err.strip()!r}")
 
-    return parse_occupancy(done.out)
+    return parse_occupancy(done.out).first
 
 
 def _ram() -> Mib:

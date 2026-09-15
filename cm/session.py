@@ -31,7 +31,7 @@ from pathlib import Path, PurePath
 
 from .advise import Pid
 from .desktop import Running
-from .machine import UnreadableDevice
+from .machine import PciAddress, UnreadableDevice
 from .units import Mib, Port
 
 _COUNTER = r"\GPU Process Memory(*)\Dedicated Usage"
@@ -122,6 +122,93 @@ class _Tcp6Listener(ctypes.Structure):
                 ("remote", ctypes.c_ubyte * _IPV6_ADDRESS),
                 ("remote_scope", wintypes.DWORD), ("remote_port", wintypes.DWORD),
                 ("state", wintypes.DWORD), ("pid", wintypes.DWORD)]
+
+
+@dataclass(frozen=True)
+class Adapter:
+    """A card as Windows' own counters name it: by the LUID of its display adapter."""
+
+    luid: str
+
+
+# What the graphics kernel is asked for an adapter's place on the bus:
+# KMTQAITYPE_ADAPTERADDRESS.
+_ADAPTER_ADDRESS = 6
+
+
+class _Luid(ctypes.Structure):
+    _fields_ = [("low", wintypes.DWORD), ("high", wintypes.LONG)]
+
+
+class _AdapterInfo(ctypes.Structure):
+    """D3DKMT_ADAPTERINFO."""
+
+    _fields_ = [("handle", ctypes.c_uint), ("luid", _Luid), ("sources", wintypes.ULONG),
+                ("precise", wintypes.BOOL)]
+
+
+class _Adapters(ctypes.Structure):
+    """D3DKMT_ENUMADAPTERS2: asked once with no room to learn the count, then filled."""
+
+    _fields_ = [("count", wintypes.ULONG), ("adapters", ctypes.POINTER(_AdapterInfo))]
+
+
+class _Query(ctypes.Structure):
+    """D3DKMT_QUERYADAPTERINFO."""
+
+    _fields_ = [("handle", ctypes.c_uint), ("type", ctypes.c_int),
+                ("data", ctypes.c_void_p), ("size", ctypes.c_uint)]
+
+
+class _Address(ctypes.Structure):
+    """D3DKMT_ADAPTERADDRESS."""
+
+    _fields_ = [("bus", ctypes.c_uint), ("device", ctypes.c_uint),
+                ("function", ctypes.c_uint)]
+
+
+class _Close(ctypes.Structure):
+    """D3DKMT_CLOSEADAPTER."""
+
+    _fields_ = [("handle", ctypes.c_uint)]
+
+
+def adapter(address: PciAddress) -> Adapter:
+    """The display adapter Windows keeps for the card at this place on the bus.
+
+    Asked of the graphics kernel, because nvidia-smi does not print the LUID the
+    performance counters name a card by, and the counters say nothing of the bus.
+    """
+    _windows_only()
+    gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
+
+    listing = _Adapters()
+    if gdi32.D3DKMTEnumAdapters2(ctypes.byref(listing)):
+        raise UnreadableDevice("Windows would not list its display adapters")
+    found = (_AdapterInfo * listing.count)()
+    listing.adapters = ctypes.cast(found, ctypes.POINTER(_AdapterInfo))
+    if gdi32.D3DKMTEnumAdapters2(ctypes.byref(listing)):
+        raise UnreadableDevice("Windows would not list its display adapters")
+
+    matched = []
+    for one in found[:listing.count]:
+        at = _Address()
+        query = _Query(handle=one.handle, type=_ADAPTER_ADDRESS,
+                       data=ctypes.cast(ctypes.byref(at), ctypes.c_void_p),
+                       size=ctypes.sizeof(at))
+        answered = gdi32.D3DKMTQueryAdapterInfo(ctypes.byref(query)) == 0
+        gdi32.D3DKMTCloseAdapter(ctypes.byref(_Close(handle=one.handle)))
+        if answered and PciAddress(bus=at.bus, device=at.device,
+                                   function=at.function) == address:
+            matched.append(f"luid_0x{one.luid.high & 0xFFFFFFFF:08x}_0x{one.luid.low:08x}")
+
+    match matched:
+        case []:
+            raise UnreadableDevice(
+                f"Windows lists no display adapter at bus {address.bus}, device "
+                f"{address.device}, function {address.function}")
+        case [luid, *_]:
+            return Adapter(luid)
 
 
 def _enum_windows() -> type:
@@ -309,11 +396,12 @@ def end(pid: Pid) -> None:
         kernel32.CloseHandle(handle)
 
 
-def running() -> tuple[Running, ...]:
-    """Every process: what it holds, what it has on screen, and whose it is."""
+def running(adapter: Adapter) -> tuple[Running, ...]:
+    """Every process: what it holds on this adapter, what it has on screen, and whose it
+    is."""
     _windows_only()
 
-    held = _held()
+    held = _held(adapter)
     windowed = _windowed()
     kernel32 = _kernel32()
     windows = _windows_itself(kernel32)
@@ -654,8 +742,9 @@ def _windows_only() -> None:
             f"this reads what only Windows can say, and this is {sys.platform}")
 
 
-def _held() -> dict[Pid, Mib]:
-    """Dedicated video memory per process, out of the performance counters."""
+def _held(adapter: Adapter) -> dict[Pid, Mib]:
+    """Dedicated video memory per process on one adapter, out of the performance
+    counters."""
     pdh = ctypes.WinDLL("pdh.dll")
 
     query = wintypes.HANDLE()
@@ -671,12 +760,13 @@ def _held() -> dict[Pid, Mib]:
         if pdh.PdhCollectQueryData(query):
             raise UnreadableDevice("the performance counters returned nothing")
 
-        return _counter_array(pdh, counter)
+        return _counter_array(pdh, counter, adapter)
     finally:
         pdh.PdhCloseQuery(query)
 
 
-def _counter_array(pdh: ctypes.WinDLL, counter: wintypes.HANDLE) -> dict[Pid, Mib]:
+def _counter_array(pdh: ctypes.WinDLL, counter: wintypes.HANDLE,
+                   adapter: Adapter) -> dict[Pid, Mib]:
     size = wintypes.DWORD(0)
     count = wintypes.DWORD(0)
 
@@ -697,13 +787,16 @@ def _counter_array(pdh: ctypes.WinDLL, counter: wintypes.HANDLE) -> dict[Pid, Mi
     held: dict[Pid, Mib] = {}
     for index in range(count.value):
         item = items[index]
-        found = _INSTANCE.match(item.name or "")
-        if found is None or item.value.large <= 0:
+        name = item.name or ""
+        found = _INSTANCE.match(name)
+        # One instance per process and adapter, pid_<pid>_luid_<luid>_phys_<n>, with the
+        # LUID's hex digits in capitals where the graphics kernel gives them in lower case.
+        if (found is None or item.value.large <= 0
+                or f"_{adapter.luid}_" not in name.lower()):
             continue
 
         pid = Pid(int(found.group(1)))
         mib = Mib(round(item.value.large / _BYTES_PER_MIB))
-        # One process appears once per adapter it draws on.
         held[pid] = Mib(held.get(pid, Mib(0)) + mib)
 
     return held

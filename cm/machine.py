@@ -4,6 +4,7 @@ Nothing here reads a device. The figures arrive from devices.py already measured
 what is computed from them is computed the same way whoever asks.
 """
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import NewType
@@ -39,6 +40,16 @@ class Capability:
 
 
 @dataclass(frozen=True)
+class PciAddress:
+    """Where a card sits on the PCI bus. Windows names a card by an identifier nvidia-smi
+    never prints, and this is what the two of them agree on."""
+
+    bus: int
+    device: int
+    function: int
+
+
+@dataclass(frozen=True)
 class Installed:
     """A card in this machine, and what placing a model across several of them needs.
 
@@ -50,6 +61,38 @@ class Installed:
     card: Card
     capability: Capability
     drives_display: bool
+    address: PciAddress
+
+
+@dataclass(frozen=True)
+class NoDesktopCard:
+    """Of this machine's several cards, not one has a monitor plugged in."""
+
+
+@dataclass(frozen=True)
+class SeveralDesktopCards:
+    """More than one of this machine's cards has a monitor plugged in."""
+
+    count: int
+
+
+def desktop_card(cards: NonEmpty[Installed]
+                 ) -> Installed | NoDesktopCard | SeveralDesktopCards:
+    """The card a desktop is drawn on: the one somebody closes windows to make room on.
+
+    A machine with one card has that card, monitor or not. Of several, it is the one with
+    a monitor plugged in; what holds the others is nothing a person can close.
+    """
+    if len(cards) == 1:
+        return cards.first
+
+    match [one for one in cards if one.drives_display]:
+        case []:
+            return NoDesktopCard()
+        case [one]:
+            return one
+        case [_, _, *_] as showing:
+            return SeveralDesktopCards(len(showing))
 
 
 @dataclass(frozen=True)
@@ -193,10 +236,14 @@ def parse_occupancy(text: str) -> NonEmpty[Occupancy]:
 
 
 # What a placement needs to know of every card, as nvidia-smi is asked for it.
-CARD_FIELDS = "index,name,memory.total,compute_cap,display_attached"
+CARD_FIELDS = "index,name,memory.total,compute_cap,display_attached,pci.bus_id"
 
 # How nvidia-smi says whether a monitor is plugged into a card.
 _DISPLAY = {"Yes": True, "No": False}
+
+# How nvidia-smi writes a card's place on the bus: the domain, the bus and the device,
+# then the function, every one of them in hexadecimal.
+_BUS_ID = re.compile(r"^[0-9A-Fa-f]{4,8}:([0-9A-Fa-f]{2}):([0-9A-Fa-f]{2})\.([0-9A-Fa-f])$")
 
 
 def parse_cards(text: str) -> NonEmpty[Installed]:
@@ -218,16 +265,19 @@ def parse_cards(text: str) -> NonEmpty[Installed]:
 def _installed(line: str) -> Installed:
     """One card's line. A name is not split on: a card is named, not counted."""
     fields = [field.strip() for field in line.split(",")]
-    if len(fields) != 5:
+    if len(fields) != 6:
         raise UnreadableDevice(f"cannot read a card out of nvidia-smi: {line.strip()!r}")
 
-    index, name, total, capability, display = fields
+    index, name, total, capability, display, bus_id = fields
     major, _, minor = capability.partition(".")
+    address = _BUS_ID.match(bus_id)
     if not (index.isdigit() and name and total.isdigit() and major.isdigit()
-            and minor.isdigit() and display in _DISPLAY):
+            and minor.isdigit() and display in _DISPLAY and address is not None):
         raise UnreadableDevice(f"cannot read a card out of nvidia-smi: {line.strip()!r}")
 
+    bus, device, function = (int(part, 16) for part in address.groups())
     return Installed(index=CudaIndex(int(index)),
                      card=Card(name=name, total=Mib(int(total))),
                      capability=Capability(int(major), int(minor)),
-                     drives_display=_DISPLAY[display])
+                     drives_display=_DISPLAY[display],
+                     address=PciAddress(bus=bus, device=device, function=function))

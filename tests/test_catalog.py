@@ -67,6 +67,9 @@ def without(section: str) -> str:
 
 MEMORY = system_memory(Fitted(), MACHINE, Mib(0))
 
+# The one card of MACHINE, by the name llama.cpp gives it.
+CARD = "CUDA0"
+
 
 SERVING = Serving(host=DEFAULT_HOST, port=DEFAULT_PORT, resident=DEFAULT_RESIDENT,
                   idle=DEFAULT_IDLE, logs=somewhere("llama.cpp") / "logs")
@@ -113,7 +116,7 @@ class WhatCalibrateWritesIsWhatVramReads(unittest.TestCase):
 
         self.assertEqual((Loadable("gemma4-12b", Mib(16303 - 6018)),
                           Loadable("ornith-1.0-35b", Mib(16303 - 968))),
-                         parse(written))
+                         parse(written, CARD))
 
     def test_every_profile_of_a_model_comes_back_under_its_own_name(self):
         written = preset(config(), MACHINE, MEMORY,
@@ -122,32 +125,32 @@ class WhatCalibrateWritesIsWhatVramReads(unittest.TestCase):
                                  settings(45000, spare=1027)),))
 
         self.assertEqual(["qwen3.8-33k-q8-mtp", "qwen3.8-45k-q8"],
-                         [one.name for one in parse(written)])
+                         [one.name for one in parse(written, CARD)])
 
     def test_the_shared_block_is_nothing_a_person_can_load(self):
         written = preset(config(), MACHINE, MEMORY, (placed("gemma4-12b", settings(262000)),))
 
-        self.assertNotIn("*", [one.name for one in parse(written)])
+        self.assertNotIn("*", [one.name for one in parse(written, CARD)])
 
 
 class TheProfilesComeBackInTheOrderTheFileListsThem(unittest.TestCase):
     def test_the_order_is_the_files_own(self):
         self.assertEqual(["gemma4-12b", "qwen3.8-45k-q8"],
-                         [one.name for one in parse(PRESET)])
+                         [one.name for one in parse(PRESET, CARD)])
 
     def test_the_figures_belong_to_the_sections_they_stand_in(self):
         self.assertEqual([Mib(10285), Mib(15276)],
-                         [one.needs for one in parse(PRESET)])
+                         [one.needs for one in parse(PRESET, CARD)])
 
     def test_what_stands_before_the_first_section_belongs_to_no_section(self):
         """A header that mentions the label is a header, not a profile."""
-        self.assertNotIn(Mib(99999), [one.needs for one in parse(PRESET)])
+        self.assertNotIn(Mib(99999), [one.needs for one in parse(PRESET, CARD)])
 
 
 class AFileThatCannotBeReadSaysSo(unittest.TestCase):
     def test_a_section_that_states_nothing_is_named(self):
         with self.assertRaises(ConfigError) as refused:
-            parse(without("gemma4-12b"))
+            parse(without("gemma4-12b"), CARD)
 
         self.assertIn("gemma4-12b", str(refused.exception))
 
@@ -155,21 +158,21 @@ class AFileThatCannotBeReadSaysSo(unittest.TestCase):
         """A profile needing nothing would be one that always fits, and every
         comparison downstream would wave it through."""
         with self.assertRaises(ConfigError):
-            parse(without("qwen3.8-45k-q8"))
+            parse(without("qwen3.8-45k-q8"), CARD)
 
     def test_a_figure_that_is_not_a_number_is_refused(self):
         broken = PRESET.replace("10285 MiB", "plenty of MiB")
 
         with self.assertRaises(ConfigError):
-            parse(broken)
+            parse(broken, CARD)
 
     def test_a_preset_with_no_profiles_in_it_is_refused(self):
         with self.assertRaises(ConfigError):
-            parse("version = 1\n\n[*]\nthreads = 16\n")
+            parse("version = 1\n\n[*]\nthreads = 16\n", CARD)
 
     def test_an_empty_file_is_refused(self):
         with self.assertRaises(ConfigError):
-            parse("")
+            parse("", CARD)
 
 
 class TheRestOfTheFileIsNoneOfThisModulesBusiness(unittest.TestCase):
@@ -177,13 +180,13 @@ class TheRestOfTheFileIsNoneOfThisModulesBusiness(unittest.TestCase):
         stripped = "\n".join(line for line in PRESET.splitlines()
                              if not line.startswith(("model =", "ctx-size")))
 
-        self.assertEqual(parse(PRESET), parse(stripped))
+        self.assertEqual(parse(PRESET, CARD), parse(stripped, CARD))
 
     def test_indentation_and_blank_lines_change_nothing(self):
         spaced = "\n".join(f"   {line}   " if line else ""
                            for line in PRESET.splitlines())
 
-        self.assertEqual(parse(PRESET), parse(spaced))
+        self.assertEqual(parse(PRESET, CARD), parse(spaced, CARD))
 
     def test_a_section_stating_it_twice_is_read_once(self):
         """Nothing writes that, and a list with one profile on it twice would be a
@@ -194,7 +197,7 @@ class TheRestOfTheFileIsNoneOfThisModulesBusiness(unittest.TestCase):
             "; VRAM REQUIRED: 10285 MiB\n; VRAM REQUIRED: 10285 MiB")
 
         self.assertEqual(["gemma4-12b", "qwen3.8-45k-q8"],
-                         [one.name for one in parse(doubled)])
+                         [one.name for one in parse(doubled, CARD)])
 
 
 if __name__ == "__main__":

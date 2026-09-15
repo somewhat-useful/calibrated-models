@@ -6,7 +6,7 @@ than in every test that needs one.
 """
 
 from cm.estimate import Needs
-from cm.machine import Capability, Card, CudaIndex, Installed
+from cm.machine import Capability, Card, CudaIndex, Installed, PciAddress
 from cm.nonempty import NonEmpty
 from cm.place import Among, Chain, Layout, Local, Pipeline, local_seat
 from cm.units import Halvings, Layers, Mib
@@ -29,7 +29,7 @@ LAYOUT = Layout(devices=NonEmpty(Local(INDEX, TOTAL)),
 def installed(card: Card) -> NonEmpty[Installed]:
     """The cards of a machine with this one card in it."""
     return NonEmpty(Installed(index=INDEX, card=card, capability=Capability(12, 0),
-                              drives_display=True))
+                              drives_display=True, address=PciAddress(1, 0, 0)))
 
 
 def chains(total: Mib, reserve: Mib) -> NonEmpty[Chain]:
