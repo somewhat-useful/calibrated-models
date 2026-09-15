@@ -123,7 +123,7 @@ def local(cards, workers=()):
     return place.chains(cards, workers, RESERVES)
 
 
-class TheChainsAreTheMachinesCardsThenTheSlave(unittest.TestCase):
+class TheChainsAddTheMachinesCardsOneAtATimeThenTheSlave(unittest.TestCase):
     def test_one_card_is_one_chain_of_one_left_what_it_is_alone(self):
         chains = local(NonEmpty(card(0, 16303, Capability(12, 0), True)))
 
@@ -131,19 +131,25 @@ class TheChainsAreTheMachinesCardsThenTheSlave(unittest.TestCase):
         self.assertEqual([place.local_seat(CudaIndex(0), Mib(16303), Mib(1024))],
                          list(chains.first))
 
-    def test_the_earliest_generation_comes_first_whatever_its_number(self):
-        chains = local(two())
+    def test_the_latest_generation_is_alone_first_and_each_chain_puts_the_next_in_front(self):
+        three = NonEmpty(card(0, 8192, Capability(7, 5), False),
+                         card(1, 16303, Capability(12, 0), True),
+                         card(2, 12288, Capability(8, 6), False))
 
-        self.assertEqual([CudaIndex(1), CudaIndex(0)],
-                         [seat.device.index for seat in chains.first])
+        self.assertEqual([[CudaIndex(1)], [CudaIndex(2), CudaIndex(1)],
+                          [CudaIndex(0), CudaIndex(2), CudaIndex(1)]],
+                         [[seat.device.index for seat in chain] for chain in local(three)])
 
-    def test_a_card_with_a_monitor_is_left_the_multi_gpu_reserve(self):
-        seats = {seat.device.index: seat for seat in local(two()).first}
+    def test_the_fastest_card_alone_is_left_what_a_machines_only_card_is(self):
+        self.assertEqual(Mib(1024), local(two()).first.first.reserve)
+
+    def test_beside_others_a_card_with_a_monitor_is_left_the_multi_gpu_reserve(self):
+        seats = {seat.device.index: seat for seat in local(two())[1]}
 
         self.assertEqual(Mib(2048), seats[CudaIndex(0)].reserve)
 
-    def test_a_card_with_no_monitor_is_left_what_windows_keeps(self):
-        seats = {seat.device.index: seat for seat in local(two()).first}
+    def test_beside_others_a_card_with_no_monitor_is_left_what_windows_keeps(self):
+        seats = {seat.device.index: seat for seat in local(two())[1]}
 
         self.assertEqual(WINDOWS_SHARE, seats[CudaIndex(1)].reserve)
 
@@ -151,33 +157,45 @@ class TheChainsAreTheMachinesCardsThenTheSlave(unittest.TestCase):
         stingy = Reserves(alone=Mib(0), with_others=Mib(0))
 
         for cards in (two(), NonEmpty(card(0, 8192, Capability(7, 5), False))):
-            for seat in place.chains(cards, (), stingy).first:
-                with self.subTest(card=seat.device):
-                    self.assertEqual(WINDOWS_SHARE, seat.reserve)
+            for chain in place.chains(cards, (), stingy):
+                for seat in chain:
+                    with self.subTest(card=seat.device):
+                        self.assertEqual(WINDOWS_SHARE, seat.reserve)
 
-    def test_monitors_on_every_card_leave_every_card_the_reserve(self):
+    def test_monitors_on_every_card_leave_every_card_the_reserve_beside_others(self):
         both = NonEmpty(card(0, 16303, Capability(12, 0), True),
                         card(1, 8192, Capability(7, 5), True))
 
-        for seat in local(both).first:
+        for seat in local(both)[1]:
             with self.subTest(card=seat.device):
                 self.assertEqual(Mib(2048), seat.reserve)
 
     def test_the_driver_is_taken_off_a_local_card_and_nothing_off_a_slave(self):
         chains = local(two(), (WORKER,))
-        slave = chains[1].first
+        slave = chains.last.first
 
         self.assertEqual(Remote(WORKER.endpoint, WORKER.memory), slave.device)
         self.assertEqual(WORKER.memory, slave.available)
-        for seat in chains.first:
-            with self.subTest(card=seat.device):
-                self.assertEqual(seat.device.total - place.DRIVER_CONTEXT, seat.available)
+        for chain in chains:
+            for seat in chain:
+                if isinstance(seat.device, Local):
+                    with self.subTest(card=seat.device):
+                        self.assertEqual(seat.device.total - place.DRIVER_CONTEXT,
+                                         seat.available)
 
-    def test_a_slave_goes_first_and_the_machines_cards_follow_it(self):
+    def test_a_slave_goes_first_and_all_the_machines_cards_follow_it(self):
         chains = local(two(), (WORKER,))
 
-        self.assertEqual(2, len(chains))
-        self.assertEqual(list(chains.first), list(chains[1])[1:])
+        self.assertEqual(3, len(chains))
+        self.assertEqual(list(chains[1]), list(chains.last)[1:])
+
+    def test_a_machine_with_several_cards_names_them_and_one_with_a_slave_does_not(self):
+        several = place.limits_for(local(two()), UBATCH, MIN_CTX, AMPLE_CTX)
+        one = place.limits_for(local(NonEmpty(two().first), (WORKER,)), UBATCH, MIN_CTX,
+                               AMPLE_CTX)
+
+        self.assertIs(place.Among.SEVERAL, several.among)
+        self.assertIs(place.Among.ONE, one.among)
 
 
 class TheLayersAreAllPlacedAndOnlyOnce(unittest.TestCase):
@@ -193,29 +211,55 @@ class TheLayersAreAllPlacedAndOnlyOnce(unittest.TestCase):
                     self.assertTrue(all(count >= 1 for count in layers[:-1]))
                     self.assertGreaterEqual(layers[-1], 1 + trailing)
 
-    def test_a_layout_names_devices_of_its_chain_in_order_ending_with_the_fastest(self):
+    def test_a_layout_names_the_devices_of_one_chain_in_order(self):
         chains = local(two(), (WORKER,))
         chosen, _ = run(DENSE, chains, law(DENSE))
 
-        def within(devices, chain):
-            remaining = iter(seat.device for seat in chain)
-            return (all(device in remaining for device in devices)
-                    and devices[-1] == chain.last.device)
-
+        orders = {tuple(seat.device for seat in chain) for chain in chains}
         self.assertTrue(chosen)
         for settings in chosen:
             devices = tuple(settings.layout.devices)
             with self.subTest(devices=devices):
-                self.assertTrue(any(within(devices, chain) for chain in chains))
+                self.assertIn(devices, orders)
                 self.assertEqual(len(devices), len(settings.spare))
 
 
 SMALL = ModelFacts(n_expert=0, n_layer=Layers(48), n_ctx_train=Tokens(32768), head=NoHead())
 
 
-class ACardWithNothingToHoldIsNotUsed(unittest.TestCase):
-    """A card that would only hold what the faster one already has room for adds a hop
-    through a slower card and buys nothing."""
+TIGHT = ModelFacts(n_expert=0, n_layer=Layers(32), n_ctx_train=Tokens(262144), head=NoHead())
+
+
+class ADeviceIsAddedOnlyForTheWindowItBuys(unittest.TestCase):
+    """Every device added costs speed. The fastest card alone is placed first, and each
+    chain after it adds profiles only where they hold a longer window than every chain
+    before it did."""
+
+    def test_the_fastest_card_alone_is_placed_as_a_machine_with_only_that_card_is(self):
+        def shape(settings):
+            return (settings.ctx, settings.cache, settings.head, settings.placement,
+                    tuple(settings.spare), tuple(settings.layout.layers),
+                    settings.layout.halvings)
+
+        answer = law(DENSE)
+        alone, _ = run(DENSE, local(NonEmpty(two().first)), answer)
+        both, _ = run(DENSE, local(two()), answer)
+
+        self.assertTrue(alone)
+        self.assertEqual([shape(one) for one in alone],
+                         [shape(one) for one in both if len(one.layout.devices) == 1])
+
+    def test_every_chain_after_the_first_buys_a_longer_window_for_its_variant(self):
+        for facts in (DENSE, DENSE_WITH_HEAD):
+            chosen, _ = run(facts, local(two(fast=12288, slow=8192), (WORKER,)), law(facts))
+
+            windows = {}
+            for settings in chosen:
+                windows.setdefault((settings.cache, settings.head), []).append(settings.ctx)
+            self.assertTrue(windows)
+            for variant, found in windows.items():
+                with self.subTest(facts=facts.head, variant=variant):
+                    self.assertEqual(sorted(set(found)), found)
 
     def test_a_model_whole_on_the_fastest_card_at_its_longest_runs_there_alone(self):
         chosen, answers = run(SMALL, local(two()), law(SMALL))
@@ -249,6 +293,59 @@ class ACardWithNothingToHoldIsNotUsed(unittest.TestCase):
                                  [one for one in with_slave if not place.endpoints(one.layout)])
 
 
+class TheCoarseCacheAndTheHeadFollowTheCards(unittest.TestCase):
+    """A coarse cache is precision given up. The fastest card alone adds it beside the
+    precise one while the precise one falls short of ample, and takes it alone where the
+    precise one does not fit; a chain of more devices never gives precision up, however
+    short its window. Where a second card can buy window, a prediction head is never
+    given up for it."""
+
+    def test_alone_a_card_adds_a_coarse_cache_only_while_the_fine_one_falls_short(self):
+        answer = law(TIGHT)
+        short, _ = run(TIGHT, local(NonEmpty(card(0, 10000, Capability(12, 0), True))),
+                       answer)
+        roomy, _ = run(TIGHT, local(NonEmpty(card(0, 16303, Capability(12, 0), True))),
+                       answer)
+
+        self.assertEqual({CacheType.Q8_0, CacheType.Q4_0}, {one.cache for one in short})
+        self.assertLess(max(one.ctx for one in short if one.cache is CacheType.Q8_0),
+                        AMPLE_CTX)
+        self.assertEqual([CacheType.Q8_0], [one.cache for one in roomy])
+
+    def test_alone_a_card_the_fine_cache_does_not_fit_takes_the_coarse_one(self):
+        tight = NonEmpty(card(0, 7850, Capability(12, 0), True))
+        chosen, _ = run(TIGHT, local(tight), law(TIGHT))
+
+        self.assertEqual([CacheType.Q4_0], [one.cache for one in chosen])
+
+    def test_a_second_card_buys_the_fine_cache_and_never_a_coarse_one(self):
+        chosen, _ = run(TIGHT, local(two(fast=7850, slow=8192)), law(TIGHT))
+
+        self.assertEqual([(1, CacheType.Q4_0), (2, CacheType.Q8_0)],
+                         [(len(one.layout.devices), one.cache) for one in chosen])
+
+    def test_no_chain_of_several_devices_is_ever_asked_about_a_coarse_cache(self):
+        for facts in (DENSE, DENSE_WITH_HEAD, TIGHT):
+            _, answers = run(facts, local(two(fast=10000, slow=8192), (WORKER,)), law(facts))
+
+            for question in answers:
+                if len(question.layout.devices) > 1:
+                    with self.subTest(facts=facts, devices=question.layout.devices):
+                        self.assertIs(CacheType.Q8_0, question.cache)
+
+    def test_with_a_second_card_every_placement_runs_the_head(self):
+        chosen, _ = run(DENSE_WITH_HEAD, local(two()), law(DENSE_WITH_HEAD))
+
+        self.assertTrue(chosen)
+        self.assertTrue(all(one.head for one in chosen))
+
+    def test_a_machine_with_one_card_still_offers_both(self):
+        roomy = NonEmpty(card(0, 20480, Capability(12, 0), True))
+        chosen, _ = run(DENSE_WITH_HEAD, local(roomy), law(DENSE_WITH_HEAD))
+
+        self.assertEqual({False, True}, {one.head for one in chosen})
+
+
 class NoDeviceIsEverOverrun(unittest.TestCase):
     def test_every_device_of_every_placement_fits(self):
         for fast, slow in ((16303, 8192), (8192, 6144)):
@@ -280,9 +377,11 @@ class TheFastestCardLandsNearestItsReserve(unittest.TestCase):
         for fast in (12288, 14336, 16303):
             chains = local(two(fast=fast))
             chosen, _ = run(DENSE, chains, answer)
-            seat = chains.first.last
+            seat = chains.last.last
 
             for settings in chosen:
+                if len(settings.layout.devices) == 1:
+                    continue
                 question = place.Question(settings.ctx, settings.cache,
                                           settings.placement, settings.layout)
                 micro = place.micro_batch(UBATCH, settings.layout.halvings)
@@ -425,7 +524,8 @@ class TheCardsRunPiecesOfAPromptAtOnceUnlessApartIsMuchLonger(unittest.TestCase)
         alone = refusing(answer, lambda question: len(question.layout.devices) == 1
                          or question.layout.pipeline is pipeline)
         chosen, _ = run(facts, chains, alone)
-        return {(one.cache, one.head): one.ctx for one in chosen}
+        return {(one.cache, one.head): one.ctx for one in chosen
+                if len(one.layout.devices) > 1}
 
     def test_apart_is_taken_exactly_where_its_window_is_long_enough(self):
         for together in (1.6, 5.0):
@@ -436,6 +536,8 @@ class TheCardsRunPiecesOfAPromptAtOnceUnlessApartIsMuchLonger(unittest.TestCase)
             chosen, _ = run(DENSE, chains, answer)
 
             for settings in chosen:
+                if len(settings.layout.devices) == 1:
+                    continue
                 variant = (settings.cache, settings.head)
                 expected = (Pipeline.OFF
                             if variant not in on
@@ -458,7 +560,8 @@ class TheCardsRunPiecesOfAPromptAtOnceUnlessApartIsMuchLonger(unittest.TestCase)
         for settings in chosen:
             has_slave = any(isinstance(one, Remote) for one in settings.layout.devices)
             with self.subTest(devices=settings.layout.devices):
-                self.assertEqual(settings.layout.pipeline is Pipeline.OFF and not has_slave,
+                self.assertEqual(settings.layout.pipeline is Pipeline.OFF and not has_slave
+                                 and len(settings.layout.devices) > 1,
                                  place.runs_apart_by_override(settings.layout))
 
 

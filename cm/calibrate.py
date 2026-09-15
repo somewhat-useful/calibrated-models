@@ -113,16 +113,16 @@ def _reachable(slave: NoSlave | Worker) -> tuple[Worker, ...]:
 
 
 def _seats(machine: Machine, limits: Limits) -> tuple[str, ...]:
-    """Every device the placements are computed against, once each, in chain order."""
+    """Every chain the placements are computed against, a device a line and the chains
+    apart. A card is left a different amount alone than beside others, so it is said
+    again in every chain it is part of."""
     cards = {one.index: one.card for one in machine.cards}
 
     lines = []
-    said = set()
     for chain in limits.chains:
+        if lines:
+            lines.append("")
         for seat in chain:
-            if seat.device in said:
-                continue
-            said.add(seat.device)
             match seat.device:
                 case Local(index, _):
                     lines.append(report.opening(cards[index], seat.available,
