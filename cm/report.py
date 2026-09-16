@@ -45,6 +45,16 @@ def missing(key: str, path: Path) -> str:
             "again, or take the entry out of the settings file.")
 
 
+def too_much(key: str, resident: Mib, room: Mib) -> str:
+    """A model whose weights want more system memory than this machine has for them.
+
+    Nothing is placed for it and the run carries on, the way a model with no file goes.
+    Said with both numbers because the second one is a decision: a smaller `cache_ram`,
+    or none written down at all, is more room for weights."""
+    return (f"{key}: {resident} MiB of it would stay in system memory and this machine "
+            f"has {room} MiB for weights, so nothing is placed for it.")
+
+
 def system(memory: SystemMemory) -> str:
     """What the machine has to hold prefixes in, once the weights have had their share.
 

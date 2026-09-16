@@ -15,7 +15,7 @@ from cm.name import names
 from cm.nonempty import NonEmpty
 from cm.place import CacheType, ExpertsOnCpu, Settings, WholeCard
 from cm.render import Placed
-from cm.report import about, closing, missing, opening, system
+from cm.report import about, closing, missing, opening, system, too_much
 from cm.units import Layers, Mib, Tokens
 from one_card import LAYOUT
 from places import somewhere
@@ -81,6 +81,20 @@ class AModelWhoseFileIsGoneIsSaidToBeGone(unittest.TestCase):
         self.assertIn("nothing is placed for it", missing("m", self.GONE))
 
 
+
+class AModelWantingMoreMemoryThanThereIsIsSaidToWantIt(unittest.TestCase):
+    """The weights a mixture leaves off the cards are held in system memory, and a
+    machine has only so much of it. The run names the model and both numbers."""
+
+    def test_it_names_the_entry_and_what_it_wanted_against_what_there_is(self):
+        said = too_much("qwen3.8-flash-next", Mib(72697), Mib(57215))
+
+        self.assertIn("qwen3.8-flash-next", said)
+        self.assertIn("72697", said)
+        self.assertIn("57215", said)
+
+    def test_it_says_nothing_is_placed_for_it(self):
+        self.assertIn("nothing is placed for it", too_much("m", Mib(2), Mib(1)))
 class AModelThatGotNothingIsStillReported(unittest.TestCase):
     def test_it_is_named_and_the_reason_is_given(self):
         lines = about(placed("qwen3.8-q4km", ()))

@@ -8,7 +8,7 @@ processor is not an arithmetic.
 import unittest
 
 from cm.machine import (SYSTEM_SHARE, Card, Core, Fitted, Fixed, Machine,
-                        Share, SystemMemory, UnreadableDevice,
+                        Share, SystemMemory, UnreadableDevice, off_card,
                         parse_occupancy, system_memory, threads)
 from cm.units import Mib
 from one_card import installed
@@ -183,6 +183,40 @@ class TheCardIsReadOffTheLineNvidiaSmiPrints(unittest.TestCase):
 
         self.assertIn("driver not loaded", str(refusal.exception))
 
+
+class WeightsOffTheCardGetWhatTheSystemAndTheCacheLeave(unittest.TestCase):
+    """A mixture is placed by moving experts into system memory, and the room for them
+    is what the machine has once the system and a declared cache have had theirs."""
+
+    def test_a_fitted_cache_asks_for_none_of_it(self):
+        """It is what is left after the weights, so it does not bound them in turn."""
+        self.assertEqual(THIS_ONE.ram - SYSTEM_SHARE, off_card(Fitted(), THIS_ONE))
+
+    def test_a_size_written_down_comes_out_of_it(self):
+        self.assertEqual(THIS_ONE.ram - SYSTEM_SHARE - Mib(32768),
+                         off_card(Fixed(Mib(32768)), THIS_ONE))
+
+    def test_a_percentage_comes_out_of_it_as_the_cache_reads_it(self):
+        asked = system_memory(Share(50), THIS_ONE, Mib(0)).cache
+
+        self.assertEqual(THIS_ONE.ram - SYSTEM_SHARE - asked,
+                         off_card(Share(50), THIS_ONE))
+
+    def test_a_cache_larger_than_the_machine_leaves_no_room_rather_than_less(self):
+        for ram in SIZES:
+            with self.subTest(ram=ram):
+                self.assertEqual(Mib(0), off_card(Fixed(Mib(ram)), machine(ram)))
+
+    def test_the_room_the_cache_and_the_system_are_the_whole_machine(self):
+        """Nothing of a machine that has room for all three is left unaccounted for."""
+        for ram in SIZES:
+            asked = Mib(ram // 4)
+            if ram < asked + SYSTEM_SHARE:
+                continue
+            with self.subTest(ram=ram):
+                room = off_card(Fixed(asked), machine(ram))
+
+                self.assertEqual(Mib(ram), room + asked + SYSTEM_SHARE)
 
 class AMachineHasCores(unittest.TestCase):
     def test_one_without_them_cannot_be_built(self):

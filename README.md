@@ -673,8 +673,10 @@ file — and a machine serving one card has no reason to name any of them.
 `cache_ram` is written the way anyone would write it — `32`, `32G`, `32Gb`, `32GiB` for a
 size in gibibytes, `50%` for a share of the memory installed. Leave it out and it is
 worked out: what the machine has, less the weights the heaviest profile keeps off the
-card, less a share for the system. Half the memory, which is what an older version of this
-used, is not the answer on a machine whose job is serving models with nobody logged in.
+card, less a share for the system. Written down by name, it is room the weights may not
+take either: a model is placed within what is left after it. Half the memory, which is
+what an older version of this used, is not the answer on a machine whose job is serving
+models with nobody logged in.
 
 **The slave**, where another machine lends its card: a `[slave]` table saying where its
 worker listens, how much memory its card has and how much of it to leave.
@@ -748,6 +750,13 @@ placed across the cards or not at all. And experts read from system memory are s
 than on any card, so a mixture the fastest card cannot hold whole is not offloaded
 there: it is placed across the cards after it, and only once every card of the machine
 holds layers of it do experts stay in system memory.
+
+System memory is the other bound, the cards being one of them. What a placement leaves
+there may not be more than this machine has for weights -- what it has beyond the
+system's own share of 8 GiB, less a `cache_ram` written down by name -- because weights
+counted on but not held are read off the disk for every token, or fail to be locked
+where `load-mode` asks for them to be. A model whose heaviest profile wants more than
+that is left out of the preset, and the run says so under its name.
 
 The cards of a profile run slowest first, the order they were added in reversed, and a
 model's layers pass through them in that order. The last card is the one that works

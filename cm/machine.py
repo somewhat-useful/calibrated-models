@@ -204,12 +204,43 @@ def system_memory(budget: Budget, machine: Machine, resident: Mib) -> SystemMemo
         case Fixed(size):
             cache = size
         case Share(percent):
-            cache = Mib(round(machine.ram * percent / 100 / GIBIBYTE) * GIBIBYTE)
+            cache = _share(percent, machine)
         case Fitted():
             left = machine.ram - resident - SYSTEM_SHARE
             cache = Mib(max(0, left) // GIBIBYTE * GIBIBYTE)
 
     return SystemMemory(installed=machine.ram, resident=resident, cache=cache)
+
+
+def _share(percent: int, machine: Machine) -> Mib:
+    """A share of the installed memory, rounded to whole gibibytes."""
+    return Mib(round(machine.ram * percent / 100 / GIBIBYTE) * GIBIBYTE)
+
+
+def off_card(budget: Budget, machine: Machine) -> Mib:
+    """How much of this machine's memory the weights that leave the cards may take.
+
+    A mixture of experts is placed by moving experts into system memory, and there is
+    only so much of that: weights counted on but not held are read off the disk for
+    every token generated, or fail to be locked at all where the settings file asks for
+    them to be. So the cards are not the only bound a placement has to be inside, and
+    this is the other one.
+
+    What the machine has for weights is what it has beyond the system's own share, less
+    a cache the settings file asked for by name -- that size is a judgement already
+    made, and the weights come after it. A fitted cache takes nothing here: it is what
+    is left once the weights have taken theirs, which is the same rule read from the
+    other end.
+    """
+    match budget:
+        case Fixed(size):
+            asked = size
+        case Share(percent):
+            asked = _share(percent, machine)
+        case Fitted():
+            asked = Mib(0)
+
+    return Mib(max(0, machine.ram - SYSTEM_SHARE - asked))
 
 
 def threads(cores: Sequence[Core]) -> int:

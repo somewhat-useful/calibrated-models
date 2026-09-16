@@ -16,7 +16,7 @@ from . import (devices, files, invoke, place, proc, reach, reading, releases, re
 from .config import Config, ConfigError, Model, NoSlave
 from .estimate import parse_requirement
 from .facts import parse_facts
-from .machine import Machine, UnreadableDevice, system_memory
+from .machine import Machine, UnreadableDevice, off_card, system_memory
 from .name import names
 from .place import Limits, Local, Remote, Reserves, Worker
 from .render import Placed
@@ -70,6 +70,8 @@ def _calibrate(settings: Path) -> None:
         print(line)
     print()
 
+    room = off_card(read.cache_ram, machine)
+
     placed = []
     for model in read.models:
         if not files.exists(model.path):
@@ -77,6 +79,10 @@ def _calibrate(settings: Path) -> None:
             continue
 
         one = _place(estimator, read, model, limits)
+        if one.resident > room:
+            print(report.too_much(model.key, one.resident, room))
+            continue
+
         placed.append(one)
         print("\n".join(report.about(one)))
 
