@@ -18,7 +18,7 @@ from cm.facts import Head, ModelFacts, NoHead
 from cm.nonempty import NonEmpty
 from cm.place import CacheType, ExpertsOnCpu, Question, WholeCard
 from cm.units import Layers, Mib, Tokens
-from one_card import LAYOUT, UBATCH, chains, needs
+from one_card import LAYOUT, OFF_CARD, UBATCH, chains, needs
 
 CARD = Mib(16303)
 RESERVE = Mib(1024)
@@ -68,9 +68,9 @@ def straight_line(fixed, per_token, per_offloaded_layer=0):
 
 
 def run(facts, card, reserve, law, min_ctx=MIN_CTX, ample_ctx=AMPLE_CTX,
-        allowed=place.EVERYTHING):
+        allowed=place.EVERYTHING, off_card=OFF_CARD):
     """Drive the core the way cli.py will: ask what it asks, hand back the answers."""
-    limits = place.limits_for(chains(card, reserve), UBATCH, min_ctx, ample_ctx)
+    limits = place.limits_for(chains(card, reserve), UBATCH, min_ctx, ample_ctx, off_card)
     answers = {}
 
     for _ in range(ROUND_LIMIT):
@@ -129,7 +129,8 @@ class NothingOnTheGridWouldHaveBeenBetter(unittest.TestCase):
         law = straight_line(fixed=12000, per_token=0.021)
 
         for card in range(13000, 24001, 250):
-            limits = place.limits_for(chains(Mib(card), RESERVE), UBATCH, MIN_CTX, AMPLE_CTX)
+            limits = place.limits_for(chains(Mib(card), RESERVE), UBATCH, MIN_CTX,
+                                      AMPLE_CTX, OFF_CARD)
             chosen, _, _ = run(DENSE_WITH_HEAD, Mib(card), RESERVE, law)
 
             for settings in chosen:
@@ -146,7 +147,8 @@ class NothingOnTheGridWouldHaveBeenBetter(unittest.TestCase):
         variant = place.Variant(CacheType.Q8_0, head=False)
 
         for card in range(8000, 24001, 250):
-            limits = place.limits_for(chains(Mib(card), RESERVE), UBATCH, MIN_CTX, AMPLE_CTX)
+            limits = place.limits_for(chains(Mib(card), RESERVE), UBATCH, MIN_CTX,
+                                      AMPLE_CTX, OFF_CARD)
             chosen, _, _ = run(DENSE, Mib(card), RESERVE, law)
             offered = {(s.cache, s.head) for s in chosen}
 
@@ -159,7 +161,7 @@ class TheSearchIsCheap(unittest.TestCase):
     def test_it_asks_about_a_handful_of_points_not_all_of_them(self):
         """Two ends and a bisection: the log of the grid, not its length."""
         law = straight_line(fixed=12000, per_token=0.021)
-        limits = place.limits_for(chains(CARD, RESERVE), UBATCH, MIN_CTX, AMPLE_CTX)
+        limits = place.limits_for(chains(CARD, RESERVE), UBATCH, MIN_CTX, AMPLE_CTX, OFF_CARD)
         points = len(place.grid(DENSE_WITH_HEAD, limits))
 
         _, answers, _ = run(DENSE_WITH_HEAD, CARD, RESERVE, law)
@@ -379,6 +381,53 @@ class AWindowTooShortIsNotAProfile(unittest.TestCase):
             self.assertEqual(settings.ctx, Tokens(20000))
 
 
+class SystemMemoryIsTheOtherBoundAPlacementIsHeldTo(unittest.TestCase):
+    """A mixture is placed by moving experts into system memory, and there is as much of
+    that as the machine has.
+
+    A placement counting on more does not run slowly: the weights it left behind are
+    read off the disk for every token. So a point leaving more there than the machine
+    has is not a candidate, exactly as one overrunning a card is not -- and where the
+    memory allows fewer experts off the card than the reserve would have moved, the
+    placement is what the memory allows.
+    """
+
+    def law(self):
+        return straight_line(fixed=20000, per_token=0.011, per_offloaded_layer=400)
+
+    def test_a_mixture_nothing_would_hold_gets_no_placement(self):
+        """The card needs 34 layers of experts moved off it before the model fits, and
+        the machine has room for two."""
+        chosen, _, _ = run(MIXTURE, Mib(8192), RESERVE, self.law(), off_card=Mib(1024))
+
+        self.assertEqual((), chosen)
+
+    def test_it_settles_on_the_first_point_the_memory_allows(self):
+        """Fourteen layers of experts is all the memory holds; the card would have taken
+        sixteen off to land on its reserve, and lands short of it instead."""
+        held, _, _ = run(MIXTURE, CARD, RESERVE, self.law(), off_card=Mib(5600))
+        free, _, _ = run(MIXTURE, CARD, RESERVE, self.law(), off_card=Mib(65536))
+
+        self.assertEqual([Layers(14)], [one.placement.layers for one in held])
+        self.assertEqual([Layers(16)], [one.placement.layers for one in free])
+
+    def test_what_stays_in_memory_is_never_more_than_the_machine_has(self):
+        for room in (Mib(4000), Mib(5600), Mib(8000), Mib(16000)):
+            chosen, _, _ = run(MIXTURE, CARD, RESERVE, self.law(), off_card=room)
+
+            for settings in chosen:
+                with self.subTest(off_card=room, moved=settings.placement.layers):
+                    self.assertLessEqual(settings.placement.layers * 400, room)
+
+    def test_a_dense_model_is_bounded_by_the_card_alone(self):
+        """Nothing of a dense model leaves the card, so the memory rules nothing out."""
+        law = straight_line(fixed=12000, per_token=0.021)
+
+        chosen, _, _ = run(DENSE, CARD, RESERVE, law, off_card=Mib(0))
+
+        self.assertTrue(chosen)
+
+
 class ACoarserCacheHasToBuySomething(unittest.TestCase):
     """It is precision given up. Given up for nothing, it is not a profile.
 
@@ -550,7 +599,7 @@ class AMixtureKeepsItsWindowAndMovesExperts(unittest.TestCase):
     def test_the_least_offload_that_lands_nearest_is_taken(self):
         """Every step above it moves experts the card had room for into system RAM."""
         law = straight_line(fixed=20000, per_token=0.011, per_offloaded_layer=400)
-        limits = place.limits_for(chains(CARD, RESERVE), UBATCH, MIN_CTX, AMPLE_CTX)
+        limits = place.limits_for(chains(CARD, RESERVE), UBATCH, MIN_CTX, AMPLE_CTX, OFF_CARD)
 
         chosen, _, _ = run(MIXTURE, CARD, RESERVE, law)
 

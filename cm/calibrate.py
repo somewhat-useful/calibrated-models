@@ -16,7 +16,7 @@ from . import (devices, files, invoke, place, proc, reach, reading, releases, re
 from .config import Config, ConfigError, Model, NoSlave
 from .estimate import parse_requirement
 from .facts import parse_facts
-from .machine import Machine, UnreadableDevice, system_memory
+from .machine import Machine, UnreadableDevice, off_card, system_memory
 from .name import names
 from .place import Limits, Local, Remote, Reserves, Worker
 from .render import Placed
@@ -64,7 +64,7 @@ def _calibrate(settings: Path) -> None:
                         without_desktop=read.reserve_no_desktop)
     chains = place.chains(machine.cards, _reachable(read.slave), reserves)
     limits = place.limits_for(chains, read.runtime.ubatch, read.min_ctx,
-                              read.ample_ctx)
+                              read.ample_ctx, off_card(read.cache_ram, machine))
 
     for line in _seats(machine, limits):
         print(line)

@@ -28,6 +28,10 @@ UBATCH = 512
 MIN_CTX = Tokens(25000)
 AMPLE_CTX = Tokens(100000)
 
+# What this machine's memory may hold of the weights that leave the cards. Larger than
+# any law here leaves there, so that a test about the cards is about the cards.
+OFF_CARD = Mib(65536)
+
 BLOCK = 200
 EXPERTS = 150
 ATTENTION_PER_TOKEN = 0.002
@@ -114,7 +118,7 @@ def refusing(answer, keep):
 
 def run(facts, chains, answer, ubatch=UBATCH, ample_ctx=AMPLE_CTX,
         allowed=place.EVERYTHING):
-    limits = place.limits_for(chains, ubatch, MIN_CTX, ample_ctx)
+    limits = place.limits_for(chains, ubatch, MIN_CTX, ample_ctx, OFF_CARD)
     answers = {}
     for _ in range(5000):
         asking = place.next_questions(facts, allowed, limits, answers)
@@ -232,9 +236,9 @@ class TheChainsAddTheMachinesCardsOneAtATimeThenTheSlave(unittest.TestCase):
         self.assertEqual(list(chains[1]), list(chains.last)[1:])
 
     def test_a_machine_with_several_cards_names_them_and_one_with_a_slave_does_not(self):
-        several = place.limits_for(local(two()), UBATCH, MIN_CTX, AMPLE_CTX)
-        one = place.limits_for(local(NonEmpty(two().first), (WORKER,)), UBATCH, MIN_CTX,
-                               AMPLE_CTX)
+        several = place.limits_for(local(two()), UBATCH, MIN_CTX, AMPLE_CTX, OFF_CARD)
+        one = place.limits_for(local(NonEmpty(two().first), (WORKER,)), UBATCH,
+                               MIN_CTX, AMPLE_CTX, OFF_CARD)
 
         self.assertIs(place.Among.SEVERAL, several.among)
         self.assertIs(place.Among.ONE, one.among)

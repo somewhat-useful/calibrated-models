@@ -341,6 +341,10 @@ class Limits:
     micro-batch the settings file runs with; min_ctx is the human's call about how short
     a window stops being useful, and ample_ctx about how long a window stops wanting a
     coarser cache to lengthen it. among is how many cards of its own the machine has.
+
+    off_card is the other bound the cards are one of: how much of this machine's memory
+    the weights that leave the cards may take. A mixture is placed by moving experts
+    there, and there is only so much of it.
     """
 
     chains: NonEmpty[Chain]
@@ -348,6 +352,7 @@ class Limits:
     min_ctx: Tokens
     ample_ctx: Tokens
     among: Among
+    off_card: Mib
 
 
 @dataclass(frozen=True)
@@ -422,10 +427,10 @@ def _reserve(card: Installed, several: bool, reserves: Reserves) -> Mib:
 
 
 def limits_for(chains: NonEmpty[Chain], ubatch: int, min_ctx: Tokens,
-               ample_ctx: Tokens) -> Limits:
+               ample_ctx: Tokens, off_card: Mib) -> Limits:
     own = max(_own_cards(chain) for chain in chains)
     return Limits(chains=chains, ubatch=ubatch, min_ctx=min_ctx, ample_ctx=ample_ctx,
-                  among=Among.ONE if own == 1 else Among.SEVERAL)
+                  among=Among.ONE if own == 1 else Among.SEVERAL, off_card=off_card)
 
 
 def _own_cards(chain: Chain) -> int:
@@ -764,13 +769,15 @@ def resident(chosen: Sequence[Settings],
 @dataclass(frozen=True)
 class _Search:
     """One search along the lever: a variant, on a chain, at a micro-batch, with the
-    cards running pieces of a prompt at once or not, on a machine with this many cards."""
+    cards running pieces of a prompt at once or not, on a machine with this many cards
+    and this much memory for the weights that leave them."""
 
     variant: Variant
     chain: Chain
     halvings: Halvings
     pipeline: Pipeline
     among: Among
+    off_card: Mib
 
 
 @dataclass(frozen=True)
@@ -786,6 +793,18 @@ class _Unanswerable:
 
 
 @dataclass(frozen=True)
+class _Needed:
+    """What one answer says a configuration needs: on each device, and in system memory.
+
+    The second is what the weights that did not go on a device take there -- the experts
+    a mixture left behind, and whatever of any model the loader keeps mapped.
+    """
+
+    devices: NonEmpty[Mib]
+    off_card: Mib
+
+
+@dataclass(frozen=True)
 class _Arranged:
     """Where the layers go at one point, and what that needs on every device.
 
@@ -796,15 +815,21 @@ class _Arranged:
     layout: Layout
     needed: NonEmpty[Mib]
     short: NonEmpty[bool]
+    off_card: Mib
 
 
 @dataclass(frozen=True)
 class _Known:
-    """What the answers say about one point of one search."""
+    """What the answers say about one point of one search.
+
+    fits is of the cards; within_memory is of the machine's memory, which the weights
+    that leave the cards go into. A point has to do both.
+    """
 
     arranged: _Arranged
     spare: NonEmpty[Mib]
     fits: bool
+    within_memory: bool
     clears_reserve: bool
     # How far the placement lands from the reserve, from either side.
     miss: int
@@ -950,7 +975,8 @@ def _apart_if_worth(facts: ModelFacts, limits: Limits, variant: Variant, chain: 
     which holds the longest window any search of it could find.
     """
     window = points[together.index].ctx
-    longest = _Search(variant, chain, _halvings(limits.ubatch)[-1], apart, limits.among)
+    longest = _Search(variant, chain, _halvings(limits.ubatch)[-1], apart, limits.among,
+                      limits.off_card)
 
     match _probe(facts, longest, points, answers,
                  lambda ctx: ctx >= window * WORTH_RUNNING_APART):
@@ -982,7 +1008,8 @@ def _rung(facts: ModelFacts, limits: Limits, variant: Variant, chain: Chain,
     """
     best: _Chosen | _Nothing = _Nothing()
     for halvings in _halvings(limits.ubatch):
-        search = _Search(variant, chain, halvings, pipeline, limits.among)
+        search = _Search(variant, chain, halvings, pipeline, limits.among,
+                         limits.off_card)
 
         match _reach(facts, limits, search, best, points, answers):
             case _Ask() as asking:
@@ -1077,12 +1104,21 @@ def _step(facts: ModelFacts, search: _Search, points: Sequence[Point],
     first: the last point is the most the card could be asked to hold, and the first is
     the least. Between them the answer is where spare crosses the reserve, and a
     bisection finds that in the logarithm of the grid's length.
+
+    What the weights left off the cards take of this machine's memory falls the other
+    way along the same grid, so the points within that bound are the tail of it. The
+    search runs over that tail: the first point of it takes the place the first point of
+    the grid would otherwise have.
     """
     last = len(points) - 1
 
     match _known_at(facts, search, points, last, answers):
         case _Ask() | _Unanswerable() as waiting:
             return waiting
+        case _Known() as generous if not generous.within_memory:
+            # Even the point leaving the least in system memory leaves more than this
+            # machine has for it, and no point of this lever leaves less.
+            return _Hopeless()
         case _Known() as generous if generous.clears_reserve:
             # Even the most this lever can be asked for leaves the reserve behind: there
             # is nothing to trade and no reason to look further.
@@ -1090,7 +1126,13 @@ def _step(facts: ModelFacts, search: _Search, points: Sequence[Point],
         case _Known() as generous:
             pass
 
-    match _known_at(facts, search, points, 0, answers):
+    match _within_memory(facts, search, points, answers):
+        case _Ask() | _Unanswerable() as waiting:
+            return waiting
+        case int() as start:
+            pass
+
+    match _known_at(facts, search, points, start, answers):
         case _Ask() | _Unanswerable() as waiting:
             return waiting
         case _Known() as frugal if not frugal.fits:
@@ -1098,11 +1140,11 @@ def _step(facts: ModelFacts, search: _Search, points: Sequence[Point],
         case _Known() as frugal if not frugal.clears_reserve:
             # Nowhere on the grid is the reserve reached, so the point leaving the most
             # is the nearest to it that fits.
-            return _Settled(0, frugal)
+            return _Settled(start, frugal)
         case _Known() as frugal:
             pass
 
-    low, under, high, over = 0, frugal, last, generous
+    low, under, high, over = start, frugal, last, generous
     while high - low > 1:
         middle = (low + high) // 2
         match _known_at(facts, search, points, middle, answers):
@@ -1114,6 +1156,39 @@ def _step(facts: ModelFacts, search: _Search, points: Sequence[Point],
                 high, over = middle, known
 
     return _nearer(low, under, high, over)
+
+
+def _within_memory(facts: ModelFacts, search: _Search, points: Sequence[Point],
+                   answers: Mapping[Question, Requirement]
+                   ) -> int | _Ask | _Unanswerable:
+    """The first point of the grid whose weights off the cards fit in this machine's
+    memory.
+
+    Nothing to find where the first point already fits, which is every dense model and
+    every mixture this machine has the memory for: what a model leaves off the cards
+    falls along the grid, so where the first point is within the bound, all of them are.
+    Otherwise the crossing is found by the same bisection as everything else here.
+    """
+    match _known_at(facts, search, points, 0, answers):
+        case _Ask() | _Unanswerable() as waiting:
+            return waiting
+        case _Known() as frugal if frugal.within_memory:
+            return 0
+        case _Known():
+            pass
+
+    low, high = 0, len(points) - 1
+    while high - low > 1:
+        middle = (low + high) // 2
+        match _known_at(facts, search, points, middle, answers):
+            case _Ask() | _Unanswerable() as waiting:
+                return waiting
+            case _Known() as known if known.within_memory:
+                high = middle
+            case _Known():
+                low = middle
+
+    return high
 
 
 def _nearer(low: int, under: _Known, high: int, over: _Known) -> _Settled:
@@ -1159,6 +1234,7 @@ def _known_at(facts: ModelFacts, search: _Search, points: Sequence[Point], index
     return _Known(arranged=arranged,
                   spare=spare,
                   fits=all(one >= 0 for one in spare),
+                  within_memory=arranged.off_card <= search.off_card,
                   clears_reserve=gap >= 0 and not shortfalls,
                   miss=max((abs(gap), *(abs(one) for one in shortfalls))))
 
@@ -1193,8 +1269,9 @@ def _arranged(facts: ModelFacts, search: _Search, point: Point,
     match _needed(facts, search, point, question, answers):
         case _Ask() | _Unanswerable() as waiting:
             return waiting
-        case NonEmpty() as needed:
-            return _Arranged(question.layout, needed, NonEmpty(False, *short))
+        case _Needed() as needed:
+            return _Arranged(question.layout, needed.devices, NonEmpty(False, *short),
+                             needed.off_card)
 
 
 def _blocks_for(facts: ModelFacts, search: _Search, point: Point, position: int,
@@ -1258,8 +1335,9 @@ def _spare_with(facts: ModelFacts, search: _Search, point: Point, position: int,
     match _needed(facts, search, point, _question(facts, search, point, trial), answers):
         case _Ask() | _Unanswerable() as waiting:
             return waiting
-        case NonEmpty() as needed:
-            return _Spare(Mib(search.chain[position].available - needed[position]))
+        case _Needed() as needed:
+            return _Spare(Mib(search.chain[position].available
+                              - needed.devices[position]))
 
 
 def _question(facts: ModelFacts, search: _Search, point: Point,
@@ -1277,9 +1355,9 @@ def _question(facts: ModelFacts, search: _Search, point: Point,
 
 def _needed(facts: ModelFacts, search: _Search, point: Point, question: Question,
             answers: Mapping[Question, Requirement]
-            ) -> NonEmpty[Mib] | _Ask | _Unanswerable:
-    """What a question's answer says each device needs, the head and what it keeps to
-    roll a draft back counted in."""
+            ) -> _Needed | _Ask | _Unanswerable:
+    """What a question's answer says a configuration needs: on each device, the head and
+    what it keeps to roll a draft back counted in, and in this machine's memory."""
     if question not in answers:
         return _Ask(question)
 
@@ -1294,4 +1372,4 @@ def _needed(facts: ModelFacts, search: _Search, point: Point, question: Question
                                question.layout.devices)
             kept = snapshots(facts, search.variant, question.layout)
             first, *rest = (Mib(amount + snapshot) for amount, snapshot in zip(held, kept))
-            return NonEmpty(first, *rest)
+            return _Needed(devices=NonEmpty(first, *rest), off_card=answer.host)

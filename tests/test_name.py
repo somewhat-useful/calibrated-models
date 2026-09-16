@@ -14,7 +14,7 @@ from cm.name import names
 from cm.nonempty import NonEmpty
 from cm.place import CacheType, ExpertsOnCpu, Settings, WholeCard
 from cm.units import Layers, Mib, Tokens
-from one_card import LAYOUT, UBATCH, chains, needs
+from one_card import LAYOUT, OFF_CARD, UBATCH, chains, needs
 
 RESERVE = Mib(1024)
 MIN_CTX = Tokens(25000)
@@ -39,7 +39,7 @@ def law(question):
 
 def run(facts, card):
     """Drive the core the way cli.py will, and hand back what it settled on."""
-    limits = place.limits_for(chains(card, RESERVE), UBATCH, MIN_CTX, AMPLE_CTX)
+    limits = place.limits_for(chains(card, RESERVE), UBATCH, MIN_CTX, AMPLE_CTX, OFF_CARD)
     answers = {}
 
     for _ in range(40):
