@@ -20,8 +20,8 @@ from cm.estimate import Needs, Refused
 from cm.facts import Head, ModelFacts, NoHead
 from cm.machine import Capability, Card, CudaIndex, Installed, PciAddress
 from cm.nonempty import NonEmpty
-from cm.place import (WINDOWS_SHARE, CacheType, Endpoint, ExpertsOnCpu, Local, Pipeline,
-                      Remote, Reserves, Worker)
+from cm.place import (CacheType, Endpoint, ExpertsOnCpu, Local, Pipeline, Remote,
+                      Reserves, Worker)
 from cm.units import Layers, Mib, Port, Tokens
 
 UBATCH = 512
@@ -43,7 +43,7 @@ DENSE_WITH_HEAD = ModelFacts(n_expert=0, n_layer=Layers(64), n_ctx_train=Tokens(
 MIXTURE = ModelFacts(n_expert=128, n_layer=Layers(40), n_ctx_train=Tokens(262144),
                      head=NoHead())
 
-RESERVES = Reserves(alone=Mib(1024), with_others=Mib(2048))
+RESERVES = Reserves(alone=Mib(1024), with_others=Mib(2048), without_monitor=Mib(512))
 
 WORKER = Worker(endpoint=Endpoint("worker", Port(50052)), memory=Mib(12288),
                 reserve=Mib(2048))
@@ -169,18 +169,19 @@ class TheChainsAddTheMachinesCardsOneAtATimeThenTheSlave(unittest.TestCase):
             with self.subTest(chain=list(seats)):
                 self.assertEqual(Mib(2048), seats[CudaIndex(0)].reserve)
 
-    def test_of_several_cards_one_without_a_monitor_keeps_what_windows_keeps_alone(self):
+    def test_of_several_cards_one_without_a_monitor_keeps_its_own_reserve_alone(self):
         """The monitors moved onto the slower card, so the fastest serves with all of its
-        memory but what Windows keeps -- whatever a machine's only card would be left."""
+        memory but what nobody working at it needs -- whatever the others are left."""
         moved = NonEmpty(card(0, 16303, Capability(12, 0), False),
                          card(1, 8192, Capability(7, 5), True))
-        chains = place.chains(moved, (), Reserves(alone=Mib(3072), with_others=Mib(2048)))
+        chains = place.chains(moved, (), Reserves(alone=Mib(3072), with_others=Mib(2048),
+                                                  without_monitor=Mib(512)))
 
         self.assertEqual([CudaIndex(0)], [seat.device.index for seat in chains.first])
         for chain in chains:
             seats = {seat.device.index: seat for seat in chain}
             with self.subTest(chain=list(seats)):
-                self.assertEqual(WINDOWS_SHARE, seats[CudaIndex(0)].reserve)
+                self.assertEqual(Mib(512), seats[CudaIndex(0)].reserve)
                 if CudaIndex(1) in seats:
                     self.assertEqual(Mib(2048), seats[CudaIndex(1)].reserve)
 
@@ -189,19 +190,20 @@ class TheChainsAddTheMachinesCardsOneAtATimeThenTheSlave(unittest.TestCase):
 
         self.assertEqual(Mib(2048), seats[CudaIndex(0)].reserve)
 
-    def test_beside_others_a_card_with_no_monitor_is_left_what_windows_keeps(self):
+    def test_beside_others_a_card_with_no_monitor_is_left_the_reserve_for_one(self):
         seats = {seat.device.index: seat for seat in local(two())[1]}
 
-        self.assertEqual(WINDOWS_SHARE, seats[CudaIndex(1)].reserve)
+        self.assertEqual(Mib(512), seats[CudaIndex(1)].reserve)
 
-    def test_no_reserve_is_ever_below_what_windows_keeps(self):
-        stingy = Reserves(alone=Mib(0), with_others=Mib(0))
+    def test_a_reserve_is_what_it_says_however_little_it_is(self):
+        """Nothing is added to a reserve underneath: it is the whole of what is left."""
+        stingy = Reserves(alone=Mib(0), with_others=Mib(0), without_monitor=Mib(0))
 
         for cards in (two(), NonEmpty(card(0, 8192, Capability(7, 5), False))):
             for chain in place.chains(cards, (), stingy):
                 for seat in chain:
                     with self.subTest(card=seat.device):
-                        self.assertEqual(WINDOWS_SHARE, seat.reserve)
+                        self.assertEqual(Mib(0), seat.reserve)
 
     def test_monitors_on_every_card_leave_every_card_the_reserve_beside_others(self):
         both = NonEmpty(card(0, 16303, Capability(12, 0), True),
@@ -211,7 +213,7 @@ class TheChainsAddTheMachinesCardsOneAtATimeThenTheSlave(unittest.TestCase):
             with self.subTest(card=seat.device):
                 self.assertEqual(Mib(2048), seat.reserve)
 
-    def test_the_driver_is_taken_off_a_local_card_and_nothing_off_a_slave(self):
+    def test_nothing_is_taken_off_any_device_beside_its_reserve(self):
         chains = local(two(), (WORKER,))
         slave = chains.last.first
 
@@ -221,8 +223,7 @@ class TheChainsAddTheMachinesCardsOneAtATimeThenTheSlave(unittest.TestCase):
             for seat in chain:
                 if isinstance(seat.device, Local):
                     with self.subTest(card=seat.device):
-                        self.assertEqual(seat.device.total - place.DRIVER_CONTEXT,
-                                         seat.available)
+                        self.assertEqual(seat.device.total, seat.available)
 
     def test_a_slave_goes_first_and_all_the_machines_cards_follow_it(self):
         chains = local(two(), (WORKER,))
@@ -283,7 +284,8 @@ class ADeviceIsAddedOnlyForTheWindowItBuys(unittest.TestCase):
                     settings.layout.halvings)
 
         answer = law(DENSE)
-        same = Reserves(alone=RESERVES.with_others, with_others=RESERVES.with_others)
+        same = Reserves(alone=RESERVES.with_others, with_others=RESERVES.with_others,
+                        without_monitor=RESERVES.without_monitor)
         alone, _ = run(DENSE, place.chains(NonEmpty(two().first), (), same), answer)
         both, _ = run(DENSE, local(two()), answer)
 
@@ -356,7 +358,7 @@ class TheCoarseCacheAndTheHeadFollowTheCards(unittest.TestCase):
         self.assertEqual([CacheType.Q8_0], [one.cache for one in roomy])
 
     def test_alone_a_card_the_fine_cache_does_not_fit_takes_the_coarse_one(self):
-        tight = NonEmpty(card(0, 7850, Capability(12, 0), True))
+        tight = NonEmpty(card(0, 7450, Capability(12, 0), True))
         chosen, _ = run(TIGHT, local(tight), law(TIGHT))
 
         self.assertEqual([CacheType.Q4_0], [one.cache for one in chosen])
@@ -364,7 +366,7 @@ class TheCoarseCacheAndTheHeadFollowTheCards(unittest.TestCase):
     def test_with_a_second_card_the_fine_cache_is_placed_across_cards_never_coarsened(self):
         """The fine cache does not fit on the fastest card: alone it would take the
         coarse one, beside a second card the model is placed on both instead."""
-        chosen, _ = run(TIGHT, local(two(fast=7850, slow=8192)), law(TIGHT))
+        chosen, _ = run(TIGHT, local(two(fast=7450, slow=8192)), law(TIGHT))
 
         self.assertEqual([(2, CacheType.Q8_0)],
                          [(len(one.layout.devices), one.cache) for one in chosen])

@@ -349,7 +349,7 @@ class AWindowTooShortIsNotAProfile(unittest.TestCase):
         """The weights fit and a four-thousand-token window fits. That is not a fit."""
         law = straight_line(fixed=12000, per_token=0.021)
 
-        chosen, _, limits = run(DENSE, Mib(12600), RESERVE, law)
+        chosen, _, limits = run(DENSE, Mib(12200), RESERVE, law)
 
         self.assertGreaterEqual(limits.chains.first.first.available,
                                 12000 + round(0.021 * 4096))
@@ -359,8 +359,8 @@ class AWindowTooShortIsNotAProfile(unittest.TestCase):
         """Asking for less makes a card that served nothing serve something."""
         law = straight_line(fixed=12000, per_token=0.021)
 
-        strict, _, _ = run(DENSE, Mib(12600), RESERVE, law, min_ctx=Tokens(25000))
-        lenient, _, _ = run(DENSE, Mib(12600), RESERVE, law, min_ctx=Tokens(10000))
+        strict, _, _ = run(DENSE, Mib(12200), RESERVE, law, min_ctx=Tokens(25000))
+        lenient, _, _ = run(DENSE, Mib(12200), RESERVE, law, min_ctx=Tokens(10000))
 
         self.assertEqual(strict, ())
         self.assertTrue(lenient)
@@ -407,7 +407,7 @@ class ACoarserCacheHasToBuySomething(unittest.TestCase):
         """Nothing to compare against: the coarse cache is what makes this servable."""
         law = straight_line(fixed=12000, per_token=0.021)
 
-        chosen, _, _ = run(DENSE, Mib(12600), RESERVE, law, min_ctx=Tokens(10000))
+        chosen, _, _ = run(DENSE, Mib(12200), RESERVE, law, min_ctx=Tokens(10000))
 
         self.assertEqual([settings.cache for settings in chosen], [CacheType.Q4_0])
 

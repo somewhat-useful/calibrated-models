@@ -56,13 +56,6 @@ from .machine import CudaIndex, Installed
 from .nonempty import NonEmpty
 from .units import Halvings, Layers, Mib, Port, Tokens
 
-# Video memory the CUDA driver holds before a single tensor is placed. It appears in no
-# log the loader writes and belongs to the driver rather than to any model, so it is
-# written down once. To re-measure it: take the estimate for a configuration, load
-# exactly that configuration, and subtract the estimate from the rise in
-# nvidia-smi --query-gpu=memory.used.
-DRIVER_CONTEXT = Mib(400)
-
 # Windows are written, named and searched in thousands of tokens. A step of one costs
 # some twenty megabytes against a reserve of a thousand -- far too little to be worth an
 # unreadable number in a profile's name. Nothing is aligned to anything beyond that: a
@@ -76,21 +69,22 @@ PAGE = 1000
 MIXTURE_WINDOW = Tokens(131000)
 
 # Video memory to leave for everything that is not a model, unless the settings file
-# says otherwise. A target to land near rather than a line to clear.
+# says otherwise. A reserve is the whole of what a device is left: what the driver holds
+# for itself is inside that figure rather than taken off beside it, which is what makes
+# one number enough to write down. A target to land near rather than a line to clear.
 DEFAULT_RESERVE = Mib(1024)
 
 # What to leave on each card that drives a monitor, where the machine has several cards:
 # one of them can be worked at while the others serve, and a desktop wants room.
 DEFAULT_MULTI_GPU_RESERVE = Mib(2048)
 
+# What to leave on each card that drives no monitor, where the machine has several
+# cards: nobody works at such a card, so what its driver holds for itself is all it is
+# left. Moving the monitors off a card is what buys this.
+DEFAULT_NO_MONITOR_RESERVE = Mib(512)
+
 # What to leave on a slave's card: everything its own machine keeps, in one round figure.
 DEFAULT_SLAVE_RESERVE = Mib(2048)
-
-# The least any device is left for the system that drives it, whatever the settings file
-# asks. Windows keeps part of every card to itself, a desktop or not; tens of megabytes
-# either way make no difference, and a model that fails to allocate is lost outright.
-# A target like any reserve, not a line.
-WINDOWS_SHARE = Mib(1024)
 
 # Shortest window worth writing out, unless the settings file says otherwise. Below some
 # such length a window stops being useful, but where exactly is a judgement about the
@@ -205,12 +199,13 @@ class Worker:
 class Reserves:
     """What to leave on a machine's own cards.
 
-    alone is for a machine's only card. with_others is for each card driving a monitor
-    where there are several; a card driving none is left WINDOWS_SHARE.
+    alone is for a machine's only card. Where there are several, with_others is for each
+    card driving a monitor and without_monitor for each card driving none.
     """
 
     alone: Mib
     with_others: Mib
+    without_monitor: Mib
 
 
 class Pipeline(Enum):
@@ -358,22 +353,17 @@ class Settings:
 
 
 def local_seat(index: CudaIndex, total: Mib, reserve: Mib) -> Seat:
-    """A card in this machine, with what the driver keeps taken off the top."""
-    return Seat(device=Local(index, total),
-                available=Mib(total - DRIVER_CONTEXT),
-                reserve=_at_least_windows(reserve))
+    """A card in this machine. All of its memory is there to be placed on, and the
+    reserve is the whole of what the placement leaves behind."""
+    return Seat(device=Local(index, total), available=total, reserve=reserve)
 
 
 def remote_seat(worker: Worker) -> Seat:
-    """A slave's card. Nothing is taken off the top: the memory is a round figure a
-    person named, and what is left on it covers everything its own machine keeps."""
+    """A slave's card. The memory is a round figure a person named, and what is left on
+    it covers everything its own machine keeps."""
     return Seat(device=Remote(worker.endpoint, worker.memory),
                 available=worker.memory,
-                reserve=_at_least_windows(worker.reserve))
-
-
-def _at_least_windows(reserve: Mib) -> Mib:
-    return Mib(max(reserve, WINDOWS_SHARE))
+                reserve=worker.reserve)
 
 
 def chains(cards: NonEmpty[Installed], workers: Sequence[Worker],
@@ -392,9 +382,9 @@ def chains(cards: NonEmpty[Installed], workers: Sequence[Worker],
     than any of them, and it goes first.
 
     What a card is left is the same in every chain it is part of. A machine's only card
-    is left the reserve for one card. Where there are several, the reserve is left on
-    each card a monitor is plugged into, and a card with none is left what Windows keeps
-    -- alone as well, which is what moving the monitors off a card is for.
+    is left the reserve for one card. Where there are several, a card a monitor is
+    plugged into is left the reserve for those, and a card with none only the reserve for
+    a card nobody works at, which is what moving the monitors off a card is for.
     """
     latest_first = sorted(cards,
                           key=lambda one: (one.capability, one.card.total, -one.index),
@@ -418,7 +408,7 @@ def _reserve(card: Installed, several: bool, reserves: Reserves) -> Mib:
         return reserves.alone
     if card.drives_display:
         return reserves.with_others
-    return Mib(0)
+    return reserves.without_monitor
 
 
 def limits_for(chains: NonEmpty[Chain], ubatch: int, min_ctx: Tokens,
@@ -435,9 +425,9 @@ def _own_cards(chain: Chain) -> int:
 def holds(settings: Settings) -> NonEmpty[Mib]:
     """The video memory this placement holds on each device once it is loaded.
 
-    The other side of `spare`: everything the placement counted, plus, on a card of this
-    machine, the driver's own context. This is the figure a free-memory reading has to be
-    compared against, and the one written into the preset for `vram` to read back.
+    The other side of `spare`: everything the placement counted. This is the figure a
+    free-memory reading has to be compared against, and the one written into the preset
+    for `vram` to read back.
     """
     first, *rest = (_held(device, spare)
                     for device, spare in zip(settings.layout.devices, settings.spare))

@@ -109,29 +109,29 @@ EXPECTED = """\
 version = 1
 
 [*]
-cache-ram = 50176
+cache-ram = 51200
 fit-target = 1024
 split-mode = none
 threads = 16
 threads-batch = 16
 ubatch-size = 512
 
-[dense-109k-q4]
-; VRAM REQUIRED: 15285 MiB of video memory, held from the moment this profile loads
+[dense-124k-q4]
+; VRAM REQUIRED: 15282 MiB of video memory, held from the moment this profile loads
 model = {dense}
 cache-type-k = q4_0
 cache-type-v = q4_0
-ctx-size = 109000
+ctx-size = 124000
 fit = off
 gpu-layers = 99
 temp = 1.0
 
-[dense-30k-q8-mtp]
-; VRAM REQUIRED: 15297 MiB of video memory, held from the moment this profile loads
+[dense-37k-q8-mtp]
+; VRAM REQUIRED: 15262 MiB of video memory, held from the moment this profile loads
 model = {dense}
 cache-type-k = q8_0
 cache-type-v = q8_0
-ctx-size = 30000
+ctx-size = 37000
 fit = off
 gpu-layers = 99
 spec-draft-n-max = 3
@@ -140,28 +140,28 @@ spec-draft-type-v = q8_0
 spec-type = draft-mtp
 temp = 1.0
 
-[dense-56k-q4-mtp]
-; VRAM REQUIRED: 15279 MiB of video memory, held from the moment this profile loads
+[dense-66k-q8]
+; VRAM REQUIRED: 15300 MiB of video memory, held from the moment this profile loads
+model = {dense}
+cache-type-k = q8_0
+cache-type-v = q8_0
+ctx-size = 66000
+fit = off
+gpu-layers = 99
+temp = 1.0
+
+[dense-71k-q4-mtp]
+; VRAM REQUIRED: 15292 MiB of video memory, held from the moment this profile loads
 model = {dense}
 cache-type-k = q4_0
 cache-type-v = q4_0
-ctx-size = 56000
+ctx-size = 71000
 fit = off
 gpu-layers = 99
 spec-draft-n-max = 3
 spec-draft-type-k = q4_0
 spec-draft-type-v = q4_0
 spec-type = draft-mtp
-temp = 1.0
-
-[dense-58k-q8]
-; VRAM REQUIRED: 15300 MiB of video memory, held from the moment this profile loads
-model = {dense}
-cache-type-k = q8_0
-cache-type-v = q8_0
-ctx-size = 58000
-fit = off
-gpu-layers = 99
 temp = 1.0
 
 [mixture]
@@ -172,11 +172,11 @@ cache-type-v = q8_0
 ctx-size = 131000
 fit = off
 gpu-layers = 99
-n-cpu-moe = 16
+n-cpu-moe = 15
 temp = 1.0
 
 [short]
-; VRAM REQUIRED: 902 MiB of video memory, held from the moment this profile loads
+; VRAM REQUIRED: 502 MiB of video memory, held from the moment this profile loads
 model = {short}
 cache-type-k = q8_0
 cache-type-v = q8_0

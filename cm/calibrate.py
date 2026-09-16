@@ -67,7 +67,8 @@ def _calibrate(settings: Path) -> None:
             pass
 
     machine = devices.probe()
-    reserves = Reserves(alone=read.reserve, with_others=read.reserve_multi_gpu)
+    reserves = Reserves(alone=read.reserve, with_others=read.reserve_multi_gpu,
+                        without_monitor=read.reserve_no_monitor)
     chains = place.chains(machine.cards, _reachable(read.slave), reserves)
     limits = place.limits_for(chains, read.runtime.ubatch, read.min_ctx,
                               read.ample_ctx)

@@ -19,8 +19,8 @@ from .lmstudio import Found, Library, Missing
 from .machine import GIBIBYTE, Budget, Fitted, Fixed, Share
 from . import rpc
 from .place import (DEFAULT_AMPLE_CTX, DEFAULT_MIN_CTX, DEFAULT_MULTI_GPU_RESERVE,
-                    DEFAULT_RESERVE, DEFAULT_SLAVE_RESERVE, EVERYTHING, Allowed,
-                    CacheType, Endpoint, Worker)
+                    DEFAULT_NO_MONITOR_RESERVE, DEFAULT_RESERVE, DEFAULT_SLAVE_RESERVE,
+                    EVERYTHING, Allowed, CacheType, Endpoint, Worker)
 from .recommended import Advised, Recommended, Setting, Unknown
 from .serving import (DEFAULT_HOST, DEFAULT_IDLE, DEFAULT_PORT, DEFAULT_RESIDENT, LOGS,
                       Serving)
@@ -138,6 +138,8 @@ class Config:
     withheld: tuple[Model, ...]
     # What to leave on each card driving a monitor, where the machine has several.
     reserve_multi_gpu: Mib = DEFAULT_MULTI_GPU_RESERVE
+    # What to leave on each card driving none, where the machine has several.
+    reserve_no_monitor: Mib = DEFAULT_NO_MONITOR_RESERVE
     # The machine lending its card, where the file names one.
     slave: NoSlave | Worker = NoSlave()
 
@@ -183,6 +185,8 @@ def parse(text: str, library: Library) -> Config:
         withheld=tuple(one.model for one in read if one.hidden),
         reserve_multi_gpu=Mib(_whole(raw, "reserve_multi_gpu_mib",
                                      DEFAULT_MULTI_GPU_RESERVE)),
+        reserve_no_monitor=Mib(_whole(raw, "reserve_no_monitor_mib",
+                                      DEFAULT_NO_MONITOR_RESERVE)),
         slave=_slave(raw),
     )
 

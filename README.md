@@ -645,6 +645,7 @@ file — and a machine serving one card has no reason to name any of them.
 |---|---|
 | `reserve_mib` | video memory to leave for everything that is not a model, on a machine with one card |
 | `reserve_multi_gpu_mib` | the same where the machine has several cards, on each card that drives a monitor. 2048 |
+| `reserve_no_monitor_mib` | the same on each card that drives none, where the machine has several. 512 |
 | `min_ctx_tokens` | below which a window stops being worth serving |
 | `ample_ctx_tokens` | past which a coarser attention cache buys nothing worth having on a card alone |
 | `cache_ram` | how much system memory the prompt cache may hold |
@@ -773,13 +774,13 @@ What each card is left:
 |---|---|
 | a machine's only card | `reserve_mib` |
 | of several cards, one a monitor is plugged into | `reserve_multi_gpu_mib`: 2048, enough to work at the desktop while the rest serve |
-| of several cards, one with no monitor | 1024, what Windows keeps -- alone as well, so a card the monitors are moved off serves with all the rest of its memory |
+| of several cards, one with no monitor | `reserve_no_monitor_mib`: 512, what its driver holds for itself, so a card the monitors are moved off serves with all the rest of its memory |
 | a card lent over the network | `reserve_mib` under `[slave]`: 2048, everything its own machine keeps |
 
-No card is left much less than 1024, whatever the file says -- Windows keeps part of every
-card to itself, desktop or not -- so `0` means as near 1024 as the layers land. Every one
-of these is a target to land near rather than a line to clear, the way `reserve_mib`
-always was: a layer that fits by landing a few megabytes under goes on.
+A reserve is the whole of what a card is left: what the driver holds for itself is inside
+that figure rather than taken off beside it, which is why one number is enough to write
+down. Every one of these is a target to land near rather than a line to clear: a layer
+that fits by landing a few megabytes under goes on.
 
 Which card drives a monitor is what `nvidia-smi` says while `calibrate` runs, and over a
 remote session Windows detaches the machine's monitors, so no card has one. `calibrate`
