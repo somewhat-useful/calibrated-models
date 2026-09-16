@@ -11,7 +11,8 @@ from pathlib import Path, PureWindowsPath
 
 from cm import config, library, place, workspace
 from cm.config import (DEFAULT_CUDA, DEFAULT_KEPT, DEFAULT_RUNTIME, DERIVED, NEUTRAL,
-                       Config, ConfigError, Runtime, Writing, naming, retuning, unnamed)
+                       Config, ConfigError, Rename, Runtime, Writing, naming, renaming,
+                       retuning, unnamed)
 from cm.library import Key
 from cm.lmstudio import Found, Missing
 from cm.machine import Fitted, Fixed, Share
@@ -613,6 +614,79 @@ class ScanWritesEntriesAndNothingElse(unittest.TestCase):
 
         self.assertEqual({"qwen3.8", self.QWEN.key, second.key},
                          {one.key for one in given.models})
+
+
+class ScanRenamesAnEntryByItsHeadersAndNothingElse(unittest.TestCase):
+    """--force keys an entry the way the library names its file today.
+
+    A rename says what a model is called here and nothing else: the file the entry
+    names, the values under it and whatever a person wrote around it all stay where they
+    were. An entry this cannot rewrite whole keeps the key it has and is named -- a key
+    rewritten in one header and left in another declares two models where there was one,
+    and TOML reads such a file as nothing at all.
+    """
+
+    RENAME = Rename(was=Key("qwen3.8"), now=Key("qwen3.8-27b-ud-iq4xs"))
+
+    def written(self, text: str) -> str:
+        return renaming(text, (self.RENAME,)).text
+
+    def left(self, text: str) -> tuple:
+        return renaming(text, (self.RENAME,)).untouched
+
+    def test_nothing_to_rename_leaves_the_text_exactly_as_it_was(self):
+        self.assertEqual(BARE, renaming(BARE, ()).text)
+
+    def test_the_entry_answers_to_the_name_the_library_builds(self):
+        given = parse(self.written(BARE))
+
+        self.assertEqual([self.RENAME.now], [one.key for one in given.models])
+
+    def test_the_file_it_names_is_the_file_it_named(self):
+        given = parse(self.written(BARE))
+
+        self.assertEqual(MODELS / MODEL_FILE, given.models[0].path)
+
+    def test_its_settings_block_is_carried_over_with_it(self):
+        given = parse(self.written(BARE + "[models.'qwen3.8'.settings]\ntemp = '0.6'\n"))
+
+        self.assertEqual("0.6", given.models[0].vendor["temp"])
+
+    def test_what_a_person_wrote_around_it_survives(self):
+        note = "# fetched by hand, do not throw away\n"
+        written = self.written(BARE + note)
+
+        self.assertIn(note, written)
+        self.assertIn("qwen3.8-27b-ud-iq4xs", written)
+
+    def test_an_entry_that_is_not_there_is_left_alone_and_named(self):
+        gone = Rename(was=Key("nowhere"), now=Key("somewhere"))
+        left = renaming(BARE, (gone,))
+
+        self.assertEqual(BARE, left.text)
+        self.assertEqual((gone.was,), tuple(one.key for one in left.untouched))
+
+    def test_an_entry_that_opens_its_settings_twice_is_left_alone(self):
+        twice = (BARE + "[models.'qwen3.8'.settings]\ntemp = '0.6'\n"
+                 + "[models.'qwen3.8'.settings]\ntop-k = '20'\n")
+
+        self.assertEqual(twice, self.written(twice))
+        self.assertEqual((self.RENAME.was,), tuple(one.key for one in self.left(twice)))
+
+    def test_an_entry_carrying_a_table_of_its_own_is_left_alone(self):
+        """One this does not know to rewrite. Renaming the two headers it does know
+        would leave that table under the old key, which is a second model."""
+        besides = BARE + "[models.'qwen3.8'.notes]\nwhy = 'the fast one'\n"
+
+        self.assertEqual(besides, self.written(besides))
+        self.assertEqual((self.RENAME.was,), tuple(one.key for one in self.left(besides)))
+
+    def test_another_entry_is_not_touched(self):
+        two = BARE + "[models.'gemma4-12b']\n" + FILE + "\n"
+
+        self.assertIn("[models.'gemma4-12b']", self.written(two))
+        self.assertEqual({"qwen3.8-27b-ud-iq4xs", "gemma4-12b"},
+                         {one.key for one in parse(self.written(two)).models})
 
 
 class ScanBringsAnEntryUpToDateAndTouchesNothingElse(unittest.TestCase):

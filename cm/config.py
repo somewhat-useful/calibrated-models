@@ -309,6 +309,23 @@ class Retuning:
     untouched: tuple[Untouched, ...]
 
 
+@dataclass(frozen=True)
+class Rename:
+    """One entry's key as it stands, and as the library names the file it holds."""
+
+    was: Key
+    now: Key
+
+
+@dataclass(frozen=True)
+class Renaming:
+    """The settings text after every entry that could be renamed was, and the ones that
+    could not."""
+
+    text: str
+    untouched: tuple[Untouched, ...]
+
+
 def naming(text: str, adding: Sequence[Writing]) -> str:
     """The settings text with an entry appended for each of these models.
 
@@ -349,6 +366,31 @@ def retuning(text: str, updating: Sequence[Writing]) -> Retuning:
                 untouched.append(left)
 
     return Retuning(text=text, untouched=tuple(untouched))
+
+
+def renaming(text: str, renames: Sequence[Rename]) -> Renaming:
+    """The settings text with each of these entries keyed as the library names its file.
+
+    Two lines of an entry change and nothing else: its own header and its settings
+    block's. What a person wrote under either of them is theirs and stays where it is,
+    and so does the file the entry names -- a rename says what a model is called here,
+    never which file that is.
+
+    An entry this cannot find, one that opens its settings twice, or one carrying a
+    table of its own besides them comes back untouched and named. A key rewritten in one
+    header and left in another is a file that declares two models where there was one,
+    and TOML reads such a file as nothing at all.
+    """
+    untouched = []
+
+    for one in renames:
+        match _renamed(text, one):
+            case _Renamed(written):
+                text = written
+            case Untouched(_, _) as left:
+                untouched.append(left)
+
+    return Renaming(text=text, untouched=tuple(untouched))
 
 
 def _entry_written(writing: Writing) -> str:
@@ -461,6 +503,38 @@ def _retuned(text: str, writing: Writing) -> _Retuned | Untouched:
                                        *lines[ends:]]) + "\n")
         case _:
             return Untouched(key, "it opens its settings block more than once")
+
+
+@dataclass(frozen=True)
+class _Renamed:
+    """The whole text, with one entry keyed as the library names its file."""
+
+    text: str
+
+
+def _renamed(text: str, rename: Rename) -> _Renamed | Untouched:
+    lines = text.splitlines()
+
+    entry = _headers(lines, _ENTRY, rename.was)
+    if len(entry) != 1:
+        return Untouched(rename.was, f'no one [models."{rename.was}"] line to rename')
+
+    blocks = _headers(lines, _SETTINGS, rename.was)
+    if len(blocks) > 1:
+        return Untouched(rename.was, "it opens its settings block more than once")
+
+    under = tuple(index for index, line in enumerate(lines)
+                  if (said := _UNDER.match(line)) is not None
+                  and _unquoted(said.group("key")) == rename.was)
+    if any(index not in blocks for index in under):
+        return Untouched(rename.was, "it carries a table besides its settings")
+
+    written = list(lines)
+    written[entry[0]] = f"[models.{_quoted(rename.now)}]"
+    for block in blocks:
+        written[block] = f"[models.{_quoted(rename.now)}.{_SETTINGS_KEY}]"
+
+    return _Renamed("\n".join(written) + "\n")
 
 
 def _headers(lines: Sequence[str], header: re.Pattern[str], key: Key) -> tuple[int, ...]:

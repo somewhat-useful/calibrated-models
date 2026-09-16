@@ -27,7 +27,7 @@ programs that read the machine.
 |---|---|---|
 | `python -m cm` | either | Prints the thirteen below in the order they are run, so that which one comes next is not something to open this file for |
 | `python -m cm.install llamacpp` | the one with the card | Installs the newest llama.cpp release published for this machine's CUDA version, and removes the ones past keeping |
-| `python -m cm.scan` | the one with the card | Adds an entry to the settings file for every model in the library that has none yet, named after the file, and brings every entry's sampler values up to date with `recommended.toml` in this repository. An entry marked `manual = true` is left alone; nothing is ever removed |
+| `python -m cm.scan` | the one with the card | Adds an entry to the settings file for every model in the library that has none yet, named after the file, and brings every entry's sampler values up to date with `recommended.toml` in this repository. An entry marked `manual = true` is left alone; nothing is ever removed. `--force` also keys every entry the way the library names its file |
 | `python -m cm.models` | the one with the card | The models the settings file names: whether the file is in the library, which repository it came from, and the commit that repository is at now. Downloads nothing |
 | `python -m cm.calibrate` | the one with the card | Works out where each model in the settings file sits on this card, and writes `llamacpp.models.ini` — the preset the router reads. Loads nothing; it asks the estimator, which reads GGUF headers, so it takes seconds |
 | `python -m cm.router start` | the one with the card | Runs the server of the newest release unpacked here, on the preset `calibrate` wrote, and reports what it serves. `stop` ends the server that is holding the configured port |
@@ -259,6 +259,25 @@ is `qwen3.8-27b-q4km` rather than a coin toss. Rename it if you would rather typ
 something shorter -- an entry belongs to its `file`, not to its key, and `scan` will not
 write a second one for a file that already has an entry.
 
+A name already in the file stays, however it was arrived at, which is how a key written
+when a model was the only one of its kind outlives the day a second quantisation arrives
+beside it. `--force` is where that is given up on purpose:
+
+```bash
+python -m cm.scan --force
+```
+
+Every entry is then keyed the way the library would name its file today, so that a name
+says which file it is rather than what it happened to be called first. Only the entry's
+two headers change; the file it names, the values under it and anything written around
+them stay. An entry marked `manual = true` is not renamed either, and neither is one
+whose file sits outside the library. Every profile of a renamed model is served under a
+new name afterwards, so the preset has to be written again:
+
+```bash
+python -m cm.calibrate
+```
+
 Files that only sit beside a model are left out: `mmproj-*.gguf` is a vision projector,
 unused here and about a gibibyte of video memory to pair, and `mtp-*.gguf` is a
 prediction head, which this reads out of the model's own file instead.
@@ -304,6 +323,7 @@ What happens to an entry when `scan` runs is decided by the entry:
 | there is none for the file | one is added, with what the repository recommends |
 | there is one | its settings block is brought up to date |
 | there is one, marked `manual = true` | nothing at all |
+| there is one keyed some other way, and `--force` | it is keyed the way the library names its file |
 | there is one, and its settings are written some other way | nothing at all, and the run says which entry and why |
 
 The last is for a settings block `scan` cannot replace: one whose header carries a
