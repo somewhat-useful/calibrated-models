@@ -88,14 +88,6 @@ class AModelThatGotNothingIsStillReported(unittest.TestCase):
         self.assertEqual("qwen3.8-q4km", lines[0])
         self.assertIn("nothing fits", lines[1])
 
-    def test_the_reason_names_both_bounds(self):
-        """A model gets nothing because the cards cannot hold it, or because what would
-        leave them is more than this machine's memory holds."""
-        said = about(placed("qwen3.8-q4km", ()))[1]
-
-        self.assertIn("cards", said)
-        self.assertIn("memory", said)
-
     def test_it_is_not_silently_left_out(self):
         self.assertTrue(about(placed("qwen3.8-q4km", ())))
 

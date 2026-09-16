@@ -21,7 +21,7 @@ from cm.place import CacheType, ExpertsOnCpu
 from cm.render import Placed
 from cm.serving import DEFAULT_HOST, DEFAULT_IDLE, DEFAULT_PORT, DEFAULT_RESIDENT, Serving
 from cm.units import Layers, Mib, Tokens
-from one_card import OFF_CARD, UBATCH, chains, installed, needs
+from one_card import UBATCH, chains, installed, needs
 from places import somewhere
 
 MODELS = somewhere("models")
@@ -63,7 +63,7 @@ def placed(key, facts, estimator) -> Placed:
     model = Model(key=key, path=MODELS / f"{key}.gguf", vendor={"temp": "1.0"},
                   allowed=place.EVERYTHING, manual=False)
     limits = place.limits_for(chains(CARD, RESERVE), UBATCH, Tokens(25000),
-                              Tokens(100000), OFF_CARD)
+                              Tokens(100000))
 
     answers = {}
     while asking := place.next_questions(facts, model.allowed, limits, answers):

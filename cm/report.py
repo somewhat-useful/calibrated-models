@@ -60,8 +60,7 @@ def about(placed: Placed) -> tuple[str, ...]:
     """One model: its name, then a line per profile, or why there is none."""
     if not placed.profiles:
         return (placed.model.key,
-                "  nothing fits: what it needs is more than the cards hold, and more "
-                "than this machine's memory holds of what leaves them")
+                "  nothing fits: it is served whole or not at all")
 
     lines = [placed.model.key]
     for profile in sorted(placed.profiles, key=lambda one: one.settings.ctx):

@@ -18,11 +18,6 @@ TOTAL = Mib(16303)
 # The micro-batch the settings file runs with, as it ships.
 UBATCH = 512
 
-# What this machine's memory may hold of the weights that leave the cards. Larger than
-# any law in these tests leaves there, so that a test about the cards is about the cards;
-# the bound itself is tested where it is the subject.
-OFF_CARD = Mib(65536)
-
 # Every layer of a model on the one card.
 LAYOUT = Layout(devices=NonEmpty(Local(INDEX, TOTAL)),
                 layers=NonEmpty(Layers(65)),
