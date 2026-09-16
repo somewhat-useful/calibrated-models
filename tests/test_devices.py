@@ -43,7 +43,7 @@ DENSE_WITH_HEAD = ModelFacts(n_expert=0, n_layer=Layers(64), n_ctx_train=Tokens(
 MIXTURE = ModelFacts(n_expert=128, n_layer=Layers(40), n_ctx_train=Tokens(262144),
                      head=NoHead())
 
-RESERVES = Reserves(alone=Mib(1024), with_others=Mib(2048), without_monitor=Mib(512))
+RESERVES = Reserves(alone=Mib(1024), with_others=Mib(2048), without_desktop=Mib(512))
 
 WORKER = Worker(endpoint=Endpoint("worker", Port(50052)), memory=Mib(12288),
                 reserve=Mib(2048))
@@ -51,7 +51,7 @@ WORKER = Worker(endpoint=Endpoint("worker", Port(50052)), memory=Mib(12288),
 
 def card(index, total, capability, display) -> Installed:
     return Installed(index=CudaIndex(index), card=Card(f"card {index}", Mib(total)),
-                     capability=capability, drives_display=display,
+                     capability=capability, draws_desktop=display,
                      address=PciAddress(index + 1, 0, 0))
 
 
@@ -175,7 +175,7 @@ class TheChainsAddTheMachinesCardsOneAtATimeThenTheSlave(unittest.TestCase):
         moved = NonEmpty(card(0, 16303, Capability(12, 0), False),
                          card(1, 8192, Capability(7, 5), True))
         chains = place.chains(moved, (), Reserves(alone=Mib(3072), with_others=Mib(2048),
-                                                  without_monitor=Mib(512)))
+                                                  without_desktop=Mib(512)))
 
         self.assertEqual([CudaIndex(0)], [seat.device.index for seat in chains.first])
         for chain in chains:
@@ -197,7 +197,7 @@ class TheChainsAddTheMachinesCardsOneAtATimeThenTheSlave(unittest.TestCase):
 
     def test_a_reserve_is_what_it_says_however_little_it_is(self):
         """Nothing is added to a reserve underneath: it is the whole of what is left."""
-        stingy = Reserves(alone=Mib(0), with_others=Mib(0), without_monitor=Mib(0))
+        stingy = Reserves(alone=Mib(0), with_others=Mib(0), without_desktop=Mib(0))
 
         for cards in (two(), NonEmpty(card(0, 8192, Capability(7, 5), False))):
             for chain in place.chains(cards, (), stingy):
@@ -285,7 +285,7 @@ class ADeviceIsAddedOnlyForTheWindowItBuys(unittest.TestCase):
 
         answer = law(DENSE)
         same = Reserves(alone=RESERVES.with_others, with_others=RESERVES.with_others,
-                        without_monitor=RESERVES.without_monitor)
+                        without_desktop=RESERVES.without_desktop)
         alone, _ = run(DENSE, place.chains(NonEmpty(two().first), (), same), answer)
         both, _ = run(DENSE, local(two()), answer)
 

@@ -50,28 +50,45 @@ class PciAddress:
 
 
 @dataclass(frozen=True)
-class Installed:
-    """A card in this machine, and what placing a model across several of them needs.
+class Attached:
+    """A card in this machine, as the driver describes it.
 
-    drives_display is whether a monitor is plugged into it. A card drawing a desktop is
-    one somebody may be working at, and a placement leaves it room for that.
+    Everything about a card that is the card's own. What the machine does with it --
+    whether a desktop draws on it -- is read somewhere else and joins it in Installed.
     """
 
     index: CudaIndex
     card: Card
     capability: Capability
-    drives_display: bool
+    address: PciAddress
+
+
+@dataclass(frozen=True)
+class Installed:
+    """A card in this machine, and what placing a model across several of them needs.
+
+    draws_desktop is whether the desktop draws on this card, which is a fact about where
+    its memory goes rather than about cabling: a card drawing a desktop is one somebody
+    may be working at, and a placement leaves it room for that. Over a remote session
+    this machine's monitors are detached and no card has one, while the desktop goes on
+    holding what it holds, so it is not a monitor that is asked about.
+    """
+
+    index: CudaIndex
+    card: Card
+    capability: Capability
+    draws_desktop: bool
     address: PciAddress
 
 
 @dataclass(frozen=True)
 class NoDesktopCard:
-    """Of this machine's several cards, not one has a monitor plugged in."""
+    """Of this machine's several cards, not one draws a desktop."""
 
 
 @dataclass(frozen=True)
 class SeveralDesktopCards:
-    """More than one of this machine's cards has a monitor plugged in."""
+    """More than one of this machine's cards draws a desktop."""
 
     count: int
 
@@ -80,13 +97,13 @@ def desktop_card(cards: NonEmpty[Installed]
                  ) -> Installed | NoDesktopCard | SeveralDesktopCards:
     """The card a desktop is drawn on: the one somebody closes windows to make room on.
 
-    A machine with one card has that card, monitor or not. Of several, it is the one with
-    a monitor plugged in; what holds the others is nothing a person can close.
+    A machine with one card has that card, desktop or not. Of several, it is the one the
+    desktop draws on; what holds the others is nothing a person can close.
     """
     if len(cards) == 1:
         return cards.first
 
-    match [one for one in cards if one.drives_display]:
+    match [one for one in cards if one.draws_desktop]:
         case []:
             return NoDesktopCard()
         case [one]:
@@ -235,24 +252,23 @@ def parse_occupancy(text: str) -> NonEmpty[Occupancy]:
             return NonEmpty(first, *rest)
 
 
-# What a placement needs to know of every card, as nvidia-smi is asked for it.
-CARD_FIELDS = "index,name,memory.total,compute_cap,display_attached,pci.bus_id"
-
-# How nvidia-smi says whether a monitor is plugged into a card.
-_DISPLAY = {"Yes": True, "No": False}
+# What a placement needs to know of every card, as nvidia-smi is asked for it. Whether a
+# desktop draws on a card is not among them: nvidia-smi answers that with the monitors,
+# which a remote session detaches, and the desktop draws where it draws either way.
+CARD_FIELDS = "index,name,memory.total,compute_cap,pci.bus_id"
 
 # How nvidia-smi writes a card's place on the bus: the domain, the bus and the device,
 # then the function, every one of them in hexadecimal.
 _BUS_ID = re.compile(r"^[0-9A-Fa-f]{4,8}:([0-9A-Fa-f]{2}):([0-9A-Fa-f]{2})\.([0-9A-Fa-f])$")
 
 
-def parse_cards(text: str) -> NonEmpty[Installed]:
+def parse_cards(text: str) -> NonEmpty[Attached]:
     """`nvidia-smi --query-gpu=<CARD_FIELDS>`, csv, no units: every card in the machine.
 
     Every line has to read. A card passed over because its line did not is a card the
     placement never hears of, and a preset computed for a machine that does not exist.
     """
-    read = [_installed(line) for line in text.splitlines() if line.strip()]
+    read = [_attached(line) for line in text.splitlines() if line.strip()]
 
     match read:
         case []:
@@ -262,22 +278,21 @@ def parse_cards(text: str) -> NonEmpty[Installed]:
             return NonEmpty(first, *rest)
 
 
-def _installed(line: str) -> Installed:
+def _attached(line: str) -> Attached:
     """One card's line. A name is not split on: a card is named, not counted."""
     fields = [field.strip() for field in line.split(",")]
-    if len(fields) != 6:
+    if len(fields) != 5:
         raise UnreadableDevice(f"cannot read a card out of nvidia-smi: {line.strip()!r}")
 
-    index, name, total, capability, display, bus_id = fields
+    index, name, total, capability, bus_id = fields
     major, _, minor = capability.partition(".")
     address = _BUS_ID.match(bus_id)
     if not (index.isdigit() and name and total.isdigit() and major.isdigit()
-            and minor.isdigit() and display in _DISPLAY and address is not None):
+            and minor.isdigit() and address is not None):
         raise UnreadableDevice(f"cannot read a card out of nvidia-smi: {line.strip()!r}")
 
     bus, device, function = (int(part, 16) for part in address.groups())
-    return Installed(index=CudaIndex(int(index)),
-                     card=Card(name=name, total=Mib(int(total))),
-                     capability=Capability(int(major), int(minor)),
-                     drives_display=_DISPLAY[display],
-                     address=PciAddress(bus=bus, device=device, function=function))
+    return Attached(index=CudaIndex(int(index)),
+                    card=Card(name=name, total=Mib(int(total))),
+                    capability=Capability(int(major), int(minor)),
+                    address=PciAddress(bus=bus, device=device, function=function))

@@ -15,7 +15,7 @@ from cm.name import names
 from cm.nonempty import NonEmpty
 from cm.place import CacheType, ExpertsOnCpu, Settings, WholeCard
 from cm.render import Placed
-from cm.report import about, closing, opening, remotely, system
+from cm.report import about, closing, opening, system
 from cm.units import Layers, Mib, Tokens
 from one_card import LAYOUT
 from places import somewhere
@@ -60,14 +60,6 @@ class WhatThePlacementsWereComputedAgainstIsSaidFirst(unittest.TestCase):
         self.assertIn("15903", line)
         self.assertIn("2048", line)
         self.assertNotIn("11888", line)
-
-
-class ARunFromAnotherMachineIsSaidToBeOne(unittest.TestCase):
-    def test_it_says_where_to_run_calibrate_instead(self):
-        self.assertIn("Run calibrate at the machine itself", remotely())
-
-    def test_it_says_what_a_remote_session_does_to_the_monitors(self):
-        self.assertIn("nvidia-smi reports none on any card", remotely())
 
 
 class AModelThatGotNothingIsStillReported(unittest.TestCase):

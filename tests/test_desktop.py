@@ -10,7 +10,7 @@ import unittest
 
 from cm.advise import Holder, Pid
 from cm.advise import OnScreen, OutOfSight
-from cm.desktop import (Running, closes, family, held_by_this_window,
+from cm.desktop import (Running, closes, draws_here, family, held_by_this_window,
                         holders, not_offered)
 from cm.machine import Card, Occupancy
 from cm.units import Mib
@@ -464,6 +464,40 @@ class TheListReadsFromTheLargestDown(unittest.TestCase):
     def test_the_same_input_gives_the_same_order(self):
         self.assertEqual(holders(DESKTOP, US.pid),
                          holders(tuple(reversed(DESKTOP)), US.pid))
+
+
+class TheDesktopDrawsWhereItsCompositorHoldsMemory(unittest.TestCase):
+    """Which card a desktop is on is asked of the compositor and of nothing else.
+
+    Windows says nothing about it directly: over a remote session it detaches this
+    machine's monitors, and the driver then reports none on any card while the desktop
+    goes on holding what it holds.
+    """
+
+    def test_a_card_the_compositor_holds_memory_on_draws_the_desktop(self):
+        self.assertTrue(draws_here((process(2224, "dwm.exe", held=3505),)))
+
+    def test_a_card_it_holds_nothing_on_does_not(self):
+        """The compositor is listed against every card; only the memory tells them
+        apart."""
+        self.assertFalse(draws_here((process(2224, "dwm.exe", held=0),)))
+
+    def test_a_card_with_no_compositor_at_all_does_not(self):
+        self.assertFalse(draws_here(()))
+
+    def test_anything_else_holding_memory_there_is_not_a_desktop(self):
+        """A notification icon idling on a card nobody works at holds a few megabytes of
+        it, and nobody is working at that card."""
+        idling = (process(13892, "TrueImageMonitor.exe", held=25),
+                  process(4, "System", held=4))
+
+        self.assertFalse(draws_here(idling))
+
+    def test_a_second_session_compositor_counts_like_the_first(self):
+        """One compositor runs per logged-in session, and a remote one is a session."""
+        two = (process(2224, "dwm.exe", held=0), process(8252, "dwm.exe", held=44))
+
+        self.assertTrue(draws_here(two))
 
 
 if __name__ == "__main__":

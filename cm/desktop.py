@@ -75,6 +75,18 @@ COMPOSITOR = "dwm.exe"
 ROUTER = "llama-server.exe"
 
 
+def draws_here(running: Sequence[Running]) -> bool:
+    """Whether the desktop draws on the card these processes were read from.
+
+    The compositor is what draws it, and it holds video memory on every card it draws a
+    desktop on and on no other. Nothing is asked about monitors: a remote session
+    detaches this machine's, and the desktop goes on costing the card the same. Nor is
+    anything else that holds memory there enough -- a notification icon idling on a card
+    nobody works at holds a few megabytes of it, and nobody is working at that card.
+    """
+    return any(one.name == COMPOSITOR and one.held > 0 for one in running)
+
+
 def available(free: Mib, running: Sequence[Running]) -> Mib:
     """What a model may have: the card's free memory, and what the router already holds.
 

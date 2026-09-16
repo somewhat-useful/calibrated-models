@@ -12,9 +12,10 @@ import sys
 from ctypes import wintypes
 from pathlib import Path
 
-from . import lmstudio
+from . import desktop, lmstudio, session
 from .lmstudio import Found, Library, Missing
 from .machine import (CARD_FIELDS, Core, CudaIndex, Installed, Machine, Occupancy,
+                      PciAddress,
                       UnreadableDevice, parse_cards, parse_occupancy)
 from .nonempty import NonEmpty
 from .proc import run
@@ -70,13 +71,28 @@ def _text(path: Path) -> str:
 
 
 def cards() -> NonEmpty[Installed]:
-    """Every card in this machine, as a placement needs to know it."""
+    """Every card in this machine, as a placement needs to know it.
+
+    Two readings. The card itself comes from nvidia-smi; whether a desktop draws on it
+    comes from Windows' own counters, which say where the compositor holds memory. The
+    monitors are nobody's answer to that: a remote session detaches them, and the driver
+    then reports none on any card while the desktop holds what it held.
+    """
     done = run(("nvidia-smi", f"--query-gpu={CARD_FIELDS}",
                 "--format=csv,noheader,nounits"))
     if not done.out.strip():
         raise UnreadableDevice(f"nvidia-smi said nothing: {done.err.strip()!r}")
 
-    return parse_cards(done.out)
+    first, *rest = (Installed(index=one.index, card=one.card, capability=one.capability,
+                              draws_desktop=_draws_desktop(one.address),
+                              address=one.address)
+                    for one in parse_cards(done.out))
+    return NonEmpty(first, *rest)
+
+
+def _draws_desktop(address: PciAddress) -> bool:
+    """Whether the desktop draws on the card at this place on the bus."""
+    return desktop.draws_here(session.running(session.adapter(address)))
 
 
 def occupancy(index: CudaIndex) -> Occupancy:

@@ -568,10 +568,10 @@ NVIDIA GeForce RTX 4080 SUPER   16376 MiB   in use 13996   free 2380
 ```
 
 The card is the one a desktop is drawn on, since what holds any other is nothing a person
-closes a window to give back: a machine's only card, or of several the one with a monitor
-plugged in. Each profile's figure is what it holds on that card -- nothing, for a profile
+closes a window to give back: a machine's only card, or of several the one the desktop
+draws on. Each profile's figure is what it holds on that card -- nothing, for a profile
 that does not use it -- and each program's is what it holds there. Where several cards
-have monitors plugged in, or none of several has, `vram` says so and stops.
+draw a desktop, or none of several does, `vram` says so and stops.
 
 The first line is the card. The second is there only while the router is holding a model:
 that memory comes back the moment it is asked for a different one, so what a profile has
@@ -644,8 +644,8 @@ file — and a machine serving one card has no reason to name any of them.
 | key | what it decides |
 |---|---|
 | `reserve_mib` | video memory to leave for everything that is not a model, on a machine with one card |
-| `reserve_multi_gpu_mib` | the same where the machine has several cards, on each card that drives a monitor. 2048 |
-| `reserve_no_monitor_mib` | the same on each card that drives none, where the machine has several. 512 |
+| `reserve_multi_gpu_mib` | the same where the machine has several cards, on each card a desktop draws on. 2048 |
+| `reserve_no_desktop_mib` | the same on each card none draws on, where the machine has several. 512 |
 | `min_ctx_tokens` | below which a window stops being worth serving |
 | `ample_ctx_tokens` | past which a coarser attention cache buys nothing worth having on a card alone |
 | `cache_ram` | how much system memory the prompt cache may hold |
@@ -703,7 +703,7 @@ fits *right now* is a different question, and that is what
 **Several cards in the machine** need nothing set. `calibrate` reads every card
 `nvidia-smi` lists and adds them one at a time, the fastest first. Nothing a card reports
 says how fast it is, so the latest generation stands for the fastest, and of one
-generation the card with more memory goes first; whether a monitor is plugged into it
+generation the card with more memory goes first; whether a desktop draws on it
 decides nothing. The fastest card alone is placed first: those are the quickest
 profiles, with the compromises one card makes. Then the next card is added in front of
 it, and a profile across both is written only where it holds a longer window than the
@@ -773,8 +773,8 @@ What each card is left:
 | the card | keeps about |
 |---|---|
 | a machine's only card | `reserve_mib` |
-| of several cards, one a monitor is plugged into | `reserve_multi_gpu_mib`: 2048, enough to work at the desktop while the rest serve |
-| of several cards, one with no monitor | `reserve_no_monitor_mib`: 512, what its driver holds for itself, so a card the monitors are moved off serves with all the rest of its memory |
+| of several cards, one a desktop draws on | `reserve_multi_gpu_mib`: 2048, enough to work at the desktop while the rest serve |
+| of several cards, one no desktop draws on | `reserve_no_desktop_mib`: 512, what its driver holds for itself, so a card the monitors are moved off serves with all the rest of its memory |
 | a card lent over the network | `reserve_mib` under `[slave]`: 2048, everything its own machine keeps |
 
 A reserve is the whole of what a card is left: what the driver holds for itself is inside
@@ -782,9 +782,11 @@ that figure rather than taken off beside it, which is why one number is enough t
 down. Every one of these is a target to land near rather than a line to clear: a layer
 that fits by landing a few megabytes under goes on.
 
-Which card drives a monitor is what `nvidia-smi` says while `calibrate` runs, and over a
-remote session Windows detaches the machine's monitors, so no card has one. `calibrate`
-says so when it is run that way and carries on: run it at the machine itself.
+Which card a desktop draws on is read from Windows' own counters, as the card the
+compositor holds video memory on. Not from the monitors: over a remote session Windows
+detaches the machine's own, and `nvidia-smi` then reports none on any card while the
+desktop goes on holding what it holds. So `calibrate` writes the same profiles run from
+another machine as it does at this one.
 
 The micro-batch is searched as well, on one card as on several. `ubatch-size` in
 `[shared]` is where the search starts, and each halving of it down to 128 is placed too.

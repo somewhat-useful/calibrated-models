@@ -8,7 +8,7 @@ saying it wrongly is refused with the line saying what to fix.
 import unittest
 
 from cm.config import ConfigError, NoSlave, gibibytes, slaved, unslaved
-from cm.place import (DEFAULT_MULTI_GPU_RESERVE, DEFAULT_NO_MONITOR_RESERVE,
+from cm.place import (DEFAULT_MULTI_GPU_RESERVE, DEFAULT_NO_DESKTOP_RESERVE,
                       DEFAULT_SLAVE_RESERVE, Endpoint, Worker)
 from cm.units import Mib, Port
 from test_config import BARE, FILE, MODEL_ROOT, parse, refused
@@ -41,21 +41,21 @@ class TheMultiGpuReserveIsItsOwnSetting(unittest.TestCase):
 
 class TheReserveForACardWithoutAMonitorIsItsOwnSetting(unittest.TestCase):
     def test_absent_it_is_the_default(self):
-        self.assertEqual(DEFAULT_NO_MONITOR_RESERVE, parse(BARE).reserve_no_monitor)
+        self.assertEqual(DEFAULT_NO_DESKTOP_RESERVE, parse(BARE).reserve_no_desktop)
 
     def test_written_it_is_what_was_written(self):
         self.assertEqual(
-            Mib(256), parse("reserve_no_monitor_mib = 256\n" + BARE).reserve_no_monitor)
+            Mib(256), parse("reserve_no_desktop_mib = 256\n" + BARE).reserve_no_desktop)
 
     def test_it_moves_neither_of_the_other_two(self):
-        read = parse("reserve_no_monitor_mib = 256\n" + BARE)
+        read = parse("reserve_no_desktop_mib = 256\n" + BARE)
 
-        self.assertNotEqual(read.reserve, read.reserve_no_monitor)
-        self.assertNotEqual(read.reserve_multi_gpu, read.reserve_no_monitor)
+        self.assertNotEqual(read.reserve, read.reserve_no_desktop)
+        self.assertNotEqual(read.reserve_multi_gpu, read.reserve_no_desktop)
 
     def test_a_reserve_that_is_not_a_number_is_refused(self):
-        self.assertEqual("reserve_no_monitor_mib must be a whole number",
-                         refused("reserve_no_monitor_mib = 'lots'\n" + BARE))
+        self.assertEqual("reserve_no_desktop_mib must be a whole number",
+                         refused("reserve_no_desktop_mib = 'lots'\n" + BARE))
 
 
 class ASlaveIsReadAsWritten(unittest.TestCase):

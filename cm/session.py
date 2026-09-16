@@ -211,52 +211,6 @@ def adapter(address: PciAddress) -> Adapter:
             return Adapter(luid)
 
 
-@dataclass(frozen=True)
-class AtTheConsole:
-    """This session is the one on the machine's own screens."""
-
-
-@dataclass(frozen=True)
-class Remotely:
-    """This session is drawn on another machine. For as long as it lasts, Windows
-    detaches this machine's own monitors, and nvidia-smi reports none on any card."""
-
-
-Connection = AtTheConsole | Remotely
-
-# WTS_INFO_CLASS.WTSClientProtocolType, asked of the session this process runs in, and
-# the answer that session gives at the machine itself: WTS_PROTOCOL_TYPE_CONSOLE.
-_CURRENT_SESSION = 0xFFFFFFFF
-_CLIENT_PROTOCOL = 16
-_CONSOLE_PROTOCOL = 0
-
-
-def connection() -> Connection:
-    """Whether this session sits at the machine or reaches it from another one."""
-    _windows_only()
-
-    wtsapi32 = ctypes.WinDLL("wtsapi32", use_last_error=True)
-    wtsapi32.WTSQuerySessionInformationW.argtypes = [
-        wintypes.HANDLE, wintypes.DWORD, ctypes.c_int, ctypes.POINTER(ctypes.c_void_p),
-        ctypes.POINTER(wintypes.DWORD)]
-    wtsapi32.WTSFreeMemory.argtypes = [ctypes.c_void_p]
-
-    said = ctypes.c_void_p()
-    size = wintypes.DWORD()
-    if not wtsapi32.WTSQuerySessionInformationW(None, _CURRENT_SESSION, _CLIENT_PROTOCOL,
-                                                ctypes.byref(said), ctypes.byref(size)):
-        raise UnreadableDevice("Windows did not say how this session is connected")
-
-    try:
-        protocol = ctypes.cast(said, ctypes.POINTER(wintypes.USHORT)).contents.value
-    finally:
-        wtsapi32.WTSFreeMemory(said)
-
-    if protocol == _CONSOLE_PROTOCOL:
-        return AtTheConsole()
-    return Remotely()
-
-
 def _enum_windows() -> type:
     """The callback EnumWindows is handed. Made when it is needed rather than at import:
     the calling convention it names exists only on Windows. ctypes hands back the same

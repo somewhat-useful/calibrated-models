@@ -74,14 +74,14 @@ MIXTURE_WINDOW = Tokens(131000)
 # one number enough to write down. A target to land near rather than a line to clear.
 DEFAULT_RESERVE = Mib(1024)
 
-# What to leave on each card that drives a monitor, where the machine has several cards:
+# What to leave on each card a desktop draws on, where the machine has several cards:
 # one of them can be worked at while the others serve, and a desktop wants room.
 DEFAULT_MULTI_GPU_RESERVE = Mib(2048)
 
-# What to leave on each card that drives no monitor, where the machine has several
-# cards: nobody works at such a card, so what its driver holds for itself is all it is
-# left. Moving the monitors off a card is what buys this.
-DEFAULT_NO_MONITOR_RESERVE = Mib(512)
+# What to leave on each card no desktop draws on, where the machine has several cards:
+# nobody works at such a card, so what its driver holds for itself is all it is left.
+# Moving the desktop off a card is what buys this.
+DEFAULT_NO_DESKTOP_RESERVE = Mib(512)
 
 # What to leave on a slave's card: everything its own machine keeps, in one round figure.
 DEFAULT_SLAVE_RESERVE = Mib(2048)
@@ -200,12 +200,12 @@ class Reserves:
     """What to leave on a machine's own cards.
 
     alone is for a machine's only card. Where there are several, with_others is for each
-    card driving a monitor and without_monitor for each card driving none.
+    card a desktop draws on and without_desktop for each card none draws on.
     """
 
     alone: Mib
     with_others: Mib
-    without_monitor: Mib
+    without_desktop: Mib
 
 
 class Pipeline(Enum):
@@ -375,15 +375,15 @@ def chains(cards: NonEmpty[Installed], workers: Sequence[Worker],
     is that card alone, and each after it puts the next card in front of the chain
     before. Nothing a card reports says how fast it is, so the latest generation stands
     for the fastest, and between cards of one generation the one with more memory goes
-    first. Whether a monitor is plugged in decides nothing about the order. A chain is
+    first. Whether a desktop draws on a card decides nothing about the order. A chain is
     filled from its end, so the last card holds the most layers and the output and the
     head besides, and the fastest card is the one to give them to. Then, for each slave,
     all of the machine's cards behind its card: reached over the network, it is slower
     than any of them, and it goes first.
 
     What a card is left is the same in every chain it is part of. A machine's only card
-    is left the reserve for one card. Where there are several, a card a monitor is
-    plugged into is left the reserve for those, and a card with none only the reserve for
+    is left the reserve for one card. Where there are several, a card the desktop draws
+    on is left the reserve for those, and a card it does not draw on only the reserve for
     a card nobody works at, which is what moving the monitors off a card is for.
     """
     latest_first = sorted(cards,
@@ -406,9 +406,9 @@ def chains(cards: NonEmpty[Installed], workers: Sequence[Worker],
 def _reserve(card: Installed, several: bool, reserves: Reserves) -> Mib:
     if not several:
         return reserves.alone
-    if card.drives_display:
+    if card.draws_desktop:
         return reserves.with_others
-    return reserves.without_monitor
+    return reserves.without_desktop
 
 
 def limits_for(chains: NonEmpty[Chain], ubatch: int, min_ctx: Tokens,

@@ -29,7 +29,7 @@ LAYOUT = Layout(devices=NonEmpty(Local(INDEX, TOTAL)),
 def installed(card: Card) -> NonEmpty[Installed]:
     """The cards of a machine with this one card in it."""
     return NonEmpty(Installed(index=INDEX, card=card, capability=Capability(12, 0),
-                              drives_display=True, address=PciAddress(1, 0, 0)))
+                              draws_desktop=True, address=PciAddress(1, 0, 0)))
 
 
 def chains(total: Mib, reserve: Mib) -> NonEmpty[Chain]:

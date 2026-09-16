@@ -66,14 +66,16 @@ preset_path = 'llamacpp.models.ini'
 # than landing a little over.
 reserve_mib = 1024
 
-# The same where the machine has several cards, on each card that drives a monitor, in
+# The same where the machine has several cards, on each card a desktop draws on, in
 # every profile that card is part of: one of them is worked at while the others serve,
-# and a desktop wants room.
+# and a desktop wants room. Which card that is is read from Windows' own counters, as
+# the card its compositor holds memory on, so a remote session changes nothing.
 # reserve_multi_gpu_mib = 2048
 
-# The same on each card that drives none: nobody works at such a card, so all it is left
-# is what its driver holds for itself. This is what moving the monitors off a card buys.
-# reserve_no_monitor_mib = 512
+# The same on each card no desktop draws on: nobody works at such a card, so all it is
+# left is what its driver holds for itself. This is what moving the monitors off a card
+# buys.
+# reserve_no_desktop_mib = 512
 
 # Shortest window worth writing out, in tokens. Below some such length a profile stops
 # being useful, but where exactly is a judgement about the work rather than a fact about

@@ -37,15 +37,6 @@ def unreachable(endpoint: Endpoint) -> str:
             "python -m cm.slave start")
 
 
-def remotely() -> str:
-    """calibrate run from another machine. It goes on, and says first that what it
-    writes is not what the machine gets at its own screens."""
-    return ("calibrate is running over a remote session. While one lasts, Windows "
-            "detaches this machine's monitors and nvidia-smi reports none on any card, so "
-            "where there are several cards each is left what a card without a monitor "
-            "is. Run calibrate at the machine itself.")
-
-
 def system(memory: SystemMemory) -> str:
     """What the machine has to hold prefixes in, once the weights have had their share.
 
