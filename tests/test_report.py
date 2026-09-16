@@ -45,21 +45,24 @@ def placed(key, chosen, resident=0) -> Placed:
 
 
 class WhatThePlacementsWereComputedAgainstIsSaidFirst(unittest.TestCase):
-    def test_the_card_the_room_and_the_reserve_are_all_named(self):
-        line = opening(CARD, Mib(15903), Mib(1024))
+    def test_the_card_and_the_reserve_are_both_named(self):
+        line = opening(CARD, Mib(1024))
 
         self.assertIn(CARD.name, line)
         self.assertIn("16303", line)
-        self.assertIn("15903", line)
         self.assertIn("1024", line)
 
-    def test_the_room_and_the_reserve_are_not_read_off_the_card(self):
-        """What the driver keeps and what the settings ask for are neither of them."""
-        line = opening(CARD, Mib(15903), Mib(2048))
+    def test_the_reserve_is_not_read_off_the_card(self):
+        """What the settings ask to be left free is not a property of the card."""
+        line = opening(CARD, Mib(2048))
 
-        self.assertIn("15903", line)
         self.assertIn("2048", line)
-        self.assertNotIn("11888", line)
+        self.assertNotIn("14255", line)
+
+    def test_the_card_is_named_once(self):
+        """All of a card is placeable, so its memory said twice would be one figure
+        asking to be told apart from itself."""
+        self.assertEqual(1, opening(CARD, Mib(768)).count("16303"))
 
 
 class AModelWhoseFileIsGoneIsSaidToBeGone(unittest.TestCase):

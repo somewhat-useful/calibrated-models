@@ -35,7 +35,10 @@ from .machine import PciAddress, UnreadableDevice
 from .units import Mib, Port
 
 _COUNTER = r"\GPU Process Memory(*)\Dedicated Usage"
-_INSTANCE = re.compile(r"pid_(\d+)_")
+# One instance per process and adapter: pid_<pid>_luid_<luid>_phys_<n>. The counter gives
+# the LUID's hex digits in capitals where the graphics kernel gives them in lower case,
+# so instance names are read lowercased throughout.
+_INSTANCE = re.compile(r"pid_(\d+)_(luid_0x[0-9a-f]+_0x[0-9a-f]+)_")
 
 _PDH_FMT_LARGE = 0x00000400
 _PDH_MORE_DATA = 0x800007D2
@@ -131,6 +134,17 @@ class Adapter:
     luid: str
 
 
+@dataclass(frozen=True)
+class NoAdapter:
+    """Windows lists no display adapter for this card.
+
+    A card it does not draw with is not among its display adapters, and nothing it
+    counts is named after one. That is an answer about the card rather than a failure to
+    read the machine: what a desktop holds there is nothing, because no desktop can be
+    drawn on it at all.
+    """
+
+
 # What the graphics kernel is asked for an adapter's place on the bus:
 # KMTQAITYPE_ADAPTERADDRESS.
 _ADAPTER_ADDRESS = 6
@@ -173,11 +187,15 @@ class _Close(ctypes.Structure):
     _fields_ = [("handle", ctypes.c_uint)]
 
 
-def adapter(address: PciAddress) -> Adapter:
+def adapter(address: PciAddress) -> Adapter | NoAdapter:
     """The display adapter Windows keeps for the card at this place on the bus.
 
     Asked of the graphics kernel, because nvidia-smi does not print the LUID the
     performance counters name a card by, and the counters say nothing of the bus.
+
+    A card Windows lists no adapter for answers NoAdapter. nvidia-smi lists every card
+    the driver has; Windows lists the ones it draws with, and a card missing from the
+    second is one nothing of the desktop is on.
     """
     _windows_only()
     gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
@@ -204,9 +222,7 @@ def adapter(address: PciAddress) -> Adapter:
 
     match matched:
         case []:
-            raise UnreadableDevice(
-                f"Windows lists no display adapter at bus {address.bus}, device "
-                f"{address.device}, function {address.function}")
+            return NoAdapter()
         case [luid, *_]:
             return Adapter(luid)
 
@@ -394,6 +410,22 @@ def end(pid: Pid) -> None:
         kernel32.TerminateProcess(handle, 1)
     finally:
         kernel32.CloseHandle(handle)
+
+
+def held_by(name: str, adapters: Sequence[Adapter]) -> tuple[Mib, ...]:
+    """What the processes running this executable hold on each of these adapters.
+
+    The counters name every adapter in one reading and the machine's processes are
+    walked once, however many adapters are asked about: asking adapter by adapter is the
+    same answer at several times the cost, and the cost is a walk of every process.
+    """
+    _windows_only()
+
+    everywhere = _held_everywhere()
+    wanted = frozenset(pid for pid, exe, _ in _snapshot() if exe.lower() == name.lower())
+
+    return tuple(Mib(sum(held.get(pid, Mib(0)) for pid in wanted))
+                 for held in (everywhere.get(one.luid, {}) for one in adapters))
 
 
 def running(adapter: Adapter) -> tuple[Running, ...]:
@@ -743,8 +775,13 @@ def _windows_only() -> None:
 
 
 def _held(adapter: Adapter) -> dict[Pid, Mib]:
-    """Dedicated video memory per process on one adapter, out of the performance
-    counters."""
+    """Dedicated video memory per process on one adapter."""
+    return _held_everywhere().get(adapter.luid, {})
+
+
+def _held_everywhere() -> dict[str, dict[Pid, Mib]]:
+    """Dedicated video memory per process on every adapter Windows counts, in one
+    reading of the performance counters."""
     pdh = ctypes.WinDLL("pdh.dll")
 
     query = wintypes.HANDLE()
@@ -760,13 +797,13 @@ def _held(adapter: Adapter) -> dict[Pid, Mib]:
         if pdh.PdhCollectQueryData(query):
             raise UnreadableDevice("the performance counters returned nothing")
 
-        return _counter_array(pdh, counter, adapter)
+        return _counter_array(pdh, counter)
     finally:
         pdh.PdhCloseQuery(query)
 
 
-def _counter_array(pdh: ctypes.WinDLL, counter: wintypes.HANDLE,
-                   adapter: Adapter) -> dict[Pid, Mib]:
+def _counter_array(pdh: ctypes.WinDLL,
+                   counter: wintypes.HANDLE) -> dict[str, dict[Pid, Mib]]:
     size = wintypes.DWORD(0)
     count = wintypes.DWORD(0)
 
@@ -784,20 +821,17 @@ def _counter_array(pdh: ctypes.WinDLL, counter: wintypes.HANDLE,
                                         ctypes.byref(count), items):
         raise UnreadableDevice("the video memory counters could not be read")
 
-    held: dict[Pid, Mib] = {}
+    held: dict[str, dict[Pid, Mib]] = {}
     for index in range(count.value):
         item = items[index]
-        name = item.name or ""
-        found = _INSTANCE.match(name)
-        # One instance per process and adapter, pid_<pid>_luid_<luid>_phys_<n>, with the
-        # LUID's hex digits in capitals where the graphics kernel gives them in lower case.
-        if (found is None or item.value.large <= 0
-                or f"_{adapter.luid}_" not in name.lower()):
+        found = _INSTANCE.match((item.name or "").lower())
+        if found is None or item.value.large <= 0:
             continue
 
         pid = Pid(int(found.group(1)))
         mib = Mib(round(item.value.large / _BYTES_PER_MIB))
-        held[pid] = Mib(held.get(pid, Mib(0)) + mib)
+        on = held.setdefault(found.group(2), {})
+        on[pid] = Mib(on.get(pid, Mib(0)) + mib)
 
     return held
 

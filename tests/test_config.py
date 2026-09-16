@@ -11,8 +11,8 @@ from pathlib import Path, PureWindowsPath
 
 from cm import config, library, place, workspace
 from cm.config import (DEFAULT_CUDA, DEFAULT_KEPT, DEFAULT_RUNTIME, DERIVED, NEUTRAL,
-                       Config, ConfigError, Rename, Runtime, Writing, naming, renaming,
-                       retuning, unnamed)
+                       Config, ConfigError, Rename, Runtime, Writing, naming, renames,
+                       renaming, retuning, unnamed)
 from cm.library import Key
 from cm.lmstudio import Found, Missing
 from cm.machine import Fitted, Fixed, Share
@@ -616,6 +616,62 @@ class ScanWritesEntriesAndNothingElse(unittest.TestCase):
                          {one.key for one in given.models})
 
 
+class TheNameForcedOnAnEntryIsTheOneTheLibraryBuilds(unittest.TestCase):
+    """--force keys an entry by its file, and the names are built for the whole set.
+
+    An entry whose key is already that name is not a rename. An entry this may not key
+    -- marked manual, or holding a file the library cannot name -- keeps its key, and
+    that key is spoken for: a name built for another file may not land on it.
+    """
+
+    IQ4XS = PureWindowsPath("unsloth", "Qwen3.8-27B-GGUF", "Qwen3.8-27B-UD-IQ4_XS.gguf")
+    Q4KM = PureWindowsPath("lmstudio-community", "Qwen3.8-27B-GGUF",
+                           "Qwen3.8-27B-Q4_K_M.gguf")
+    PROJECTOR = PureWindowsPath("unsloth", "Qwen3.8-27B-GGUF", "mmproj-Qwen3.8-27B.gguf")
+
+    def entry(self, key, place, *lines) -> str:
+        return (f"[models.{key!r}]\nfile = {str(place)!r}\n"
+                + "".join(f"{line}\n" for line in lines))
+
+    def asked(self, *entries) -> tuple:
+        given = parse(MODEL_ROOT + "\n\n" + "\n".join(entries))
+        return renames(given.models + given.withheld, MODELS)
+
+    def test_an_entry_keyed_by_hand_takes_the_built_name(self):
+        self.assertEqual((Rename(was=Key("short"), now=Key("qwen3.8-27b-ud-iq4xs")),),
+                         self.asked(self.entry("short", self.IQ4XS)))
+
+    def test_an_entry_already_keyed_that_way_is_not_a_rename(self):
+        self.assertEqual((), self.asked(self.entry("qwen3.8-27b-ud-iq4xs", self.IQ4XS)))
+
+    def test_an_entry_marked_manual_keeps_its_key(self):
+        self.assertEqual((), self.asked(self.entry("short", self.IQ4XS,
+                                                   "manual = true")))
+
+    def test_a_manual_entry_holding_a_built_name_is_stepped_around(self):
+        """Its key cannot move, so the name built for the other file goes further out
+        rather than onto it."""
+        asked = self.asked(self.entry("qwen3.8-27b-ud-iq4xs", self.Q4KM, "manual = true"),
+                           self.entry("short", self.IQ4XS))
+
+        self.assertEqual((Rename(was=Key("short"),
+                                 now=Key("unsloth-qwen3.8-27b-ud-iq4xs")),), asked)
+
+    def test_an_entry_holding_a_file_that_is_not_a_model_is_stepped_around(self):
+        """A projector sits beside a model rather than being one, so the library names
+        it nothing -- and the name built for the model may not land on its key."""
+        asked = self.asked(self.entry("qwen3.8-27b-ud-iq4xs", self.PROJECTOR),
+                           self.entry("short", self.IQ4XS))
+
+        self.assertEqual((Rename(was=Key("short"),
+                                 now=Key("unsloth-qwen3.8-27b-ud-iq4xs")),), asked)
+
+    def test_an_entry_whose_file_is_outside_the_library_keeps_its_key(self):
+        outside = somewhere("elsewhere", "Qwen3.8-27B-UD-IQ4_XS.gguf")
+
+        self.assertEqual((), self.asked(self.entry("short", outside)))
+
+
 class ScanRenamesAnEntryByItsHeadersAndNothingElse(unittest.TestCase):
     """--force keys an entry the way the library names its file today.
 
@@ -680,6 +736,28 @@ class ScanRenamesAnEntryByItsHeadersAndNothingElse(unittest.TestCase):
 
         self.assertEqual(besides, self.written(besides))
         self.assertEqual((self.RENAME.was,), tuple(one.key for one in self.left(besides)))
+
+    def test_a_name_another_entry_holds_is_taken_once_that_entry_moves(self):
+        """The file keyed 'a' is named 'a-q4km', and the name 'a' belongs to the other
+        file. Writing that one first would declare 'a' twice, so it waits a round."""
+        two = (MODEL_ROOT + "\n\n[models.'a']\nfile = 'p\\r\\A-Q4_K_M.gguf'\n"
+               + "\n[models.'b']\nfile = 'p\\r\\B-Q4_K_M.gguf'\n")
+        done = renaming(two, (Rename(was=Key("b"), now=Key("a")),
+                              Rename(was=Key("a"), now=Key("a-q4km"))))
+
+        self.assertEqual((), done.untouched)
+        self.assertEqual({"a-q4km", "a"}, {one.key for one in parse(done.text).models})
+
+    def test_two_entries_holding_each_other_s_names_are_both_left_alone(self):
+        """A ring nothing can be written out of: writing either one first would declare
+        a key twice, so neither is written and both are named."""
+        two = (MODEL_ROOT + "\n\n[models.'a']\nfile = 'p\\r\\A-Q4_K_M.gguf'\n"
+               + "\n[models.'b']\nfile = 'p\\r\\B-Q4_K_M.gguf'\n")
+        done = renaming(two, (Rename(was=Key("a"), now=Key("b")),
+                              Rename(was=Key("b"), now=Key("a"))))
+
+        self.assertEqual(two, done.text)
+        self.assertEqual({"a", "b"}, {one.key for one in done.untouched})
 
     def test_another_entry_is_not_touched(self):
         two = BARE + "[models.'gemma4-12b']\n" + FILE + "\n"

@@ -144,8 +144,7 @@ def _seats(machine: Machine, limits: Limits) -> tuple[str, ...]:
         for seat in chain:
             match seat.device:
                 case Local(index, _):
-                    lines.append(report.opening(cards[index], seat.available,
-                                                seat.reserve))
+                    lines.append(report.opening(cards[index], seat.reserve))
                 case Remote(endpoint, _):
                     lines.append(report.remote(endpoint, seat.available, seat.reserve))
 

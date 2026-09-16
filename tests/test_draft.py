@@ -16,8 +16,9 @@ from cm.estimate import Needs
 from cm.facts import Head, ModelFacts, Recurrent
 from cm.machine import CudaIndex
 from cm.nonempty import NonEmpty
-from cm.place import Among, CacheType, Layout, Local, Pipeline, Variant
-from cm.units import Halvings, Layers, Mib, Tokens
+from cm.place import (Among, CacheType, Endpoint, Layout, Local, Pipeline, Remote,
+                      Variant)
+from cm.units import Halvings, Layers, Mib, Port, Tokens
 from test_devices import DENSE_WITH_HEAD, law, local, run, two
 
 ATTENDING = frozenset(range(3, 64, 4))
@@ -47,14 +48,35 @@ class TheLastDeviceCarriesTheHeadAndItsDraft(unittest.TestCase):
         """The estimator knows nothing of the context CUDA holds on every device it runs
         on, and a placement that counted less than a profile holds would be wrong."""
         self.assertEqual(NonEmpty(*(Mib(one + place.CUDA_CONTEXT) for one in ANSWER.cards)),
-                         place.requirement(HYBRID, UNDRAFTED, CTX, ANSWER))
+                         place.requirement(HYBRID, UNDRAFTED, CTX, ANSWER,
+                                           LAYOUT.devices))
 
     def test_with_one_the_last_device_adds_the_head_and_the_drafts_working_buffers(self):
-        needed = place.requirement(HYBRID, DRAFTING, CTX, ANSWER)
+        needed = place.requirement(HYBRID, DRAFTING, CTX, ANSWER, LAYOUT.devices)
 
         self.assertEqual(ANSWER.cards.first + place.CUDA_CONTEXT, needed.first)
         self.assertEqual(ANSWER.cards.last + place.head_cost(HYBRID, CacheType.Q8_0, CTX)
                          + ANSWER.working.last + place.CUDA_CONTEXT, needed.last)
+
+
+class ASlavesCardIsNotCountedTheContextOfThisMachine(unittest.TestCase):
+    """What a slave keeps on its card is one figure a person wrote into the settings
+    file, and the worker's own context is inside it."""
+
+    LENT = Layout(devices=NonEmpty(Remote(Endpoint("worker", Port(50052)), Mib(12288)),
+                                   Local(CudaIndex(0), Mib(16303))),
+                  layers=LAYOUT.layers, halvings=LAYOUT.halvings,
+                  pipeline=LAYOUT.pipeline, among=LAYOUT.among)
+
+    def test_the_slaves_card_is_counted_what_the_estimator_said(self):
+        needed = place.requirement(HYBRID, UNDRAFTED, CTX, ANSWER, self.LENT.devices)
+
+        self.assertEqual(ANSWER.cards.first, needed.first)
+
+    def test_this_machines_card_is_counted_the_context_besides(self):
+        needed = place.requirement(HYBRID, UNDRAFTED, CTX, ANSWER, self.LENT.devices)
+
+        self.assertEqual(ANSWER.cards.last + place.CUDA_CONTEXT, needed.last)
 
 
 class EveryDeviceKeepsSnapshotsOfItsRecurrentLayers(unittest.TestCase):

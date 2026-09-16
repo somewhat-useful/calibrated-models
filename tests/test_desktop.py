@@ -10,8 +10,8 @@ import unittest
 
 from cm.advise import Holder, Pid
 from cm.advise import OnScreen, OutOfSight
-from cm.desktop import (Running, closes, draws_here, family, held_by_this_window,
-                        holders, not_offered)
+from cm.desktop import (DESKTOP_SHARE, Running, closes, desktops, family,
+                        held_by_this_window, holders, not_offered)
 from cm.machine import Card, Occupancy
 from cm.units import Mib
 
@@ -466,38 +466,34 @@ class TheListReadsFromTheLargestDown(unittest.TestCase):
                          holders(tuple(reversed(DESKTOP)), US.pid))
 
 
-class TheDesktopDrawsWhereItsCompositorHoldsMemory(unittest.TestCase):
-    """Which card a desktop is on is asked of the compositor and of nothing else.
+class TheDesktopDrawsWhereItsCompositorHoldsMost(unittest.TestCase):
+    """Which cards a desktop is on is asked of the compositor and of nothing else.
 
     Windows says nothing about it directly: over a remote session it detaches this
     machine's monitors, and the driver then reports none on any card while the desktop
-    goes on holding what it holds.
+    goes on holding what it holds. The compositor holds the most where it draws the
+    desktop, and copies of windows rendered elsewhere where it does not.
     """
 
-    def test_a_card_the_compositor_holds_memory_on_draws_the_desktop(self):
-        self.assertTrue(draws_here((process(2224, "dwm.exe", held=3505),)))
+    def test_the_card_it_holds_the_most_on_draws_the_desktop(self):
+        self.assertEqual((False, True), desktops((Mib(192), Mib(2490))))
 
-    def test_a_card_it_holds_nothing_on_does_not(self):
-        """The compositor is listed against every card; only the memory tells them
-        apart."""
-        self.assertFalse(draws_here((process(2224, "dwm.exe", held=0),)))
+    def test_a_card_holding_a_share_of_that_draws_one_too(self):
+        """Monitors on two cards are two desktops, each wanting room to work at."""
+        self.assertEqual((True, True), desktops((Mib(1200), Mib(2490))))
 
-    def test_a_card_with_no_compositor_at_all_does_not(self):
-        self.assertFalse(draws_here(()))
+    def test_a_card_holding_less_than_the_share_holds_copies(self):
+        """A window rendered on a card and composed onto a screen elsewhere is copied
+        across, and the copy is credited to the compositor. Nobody works at that card."""
+        under = Mib(int(Mib(2490) * DESKTOP_SHARE) - 1)
 
-    def test_anything_else_holding_memory_there_is_not_a_desktop(self):
-        """A notification icon idling on a card nobody works at holds a few megabytes of
-        it, and nobody is working at that card."""
-        idling = (process(13892, "TrueImageMonitor.exe", held=25),
-                  process(4, "System", held=4))
+        self.assertEqual((False, True), desktops((under, Mib(2490))))
 
-        self.assertFalse(draws_here(idling))
+    def test_a_machine_nobody_is_logged_in_to_has_no_desktop_card(self):
+        self.assertEqual((False, False), desktops((Mib(0), Mib(0))))
 
-    def test_a_second_session_compositor_counts_like_the_first(self):
-        """One compositor runs per logged-in session, and a remote one is a session."""
-        two = (process(2224, "dwm.exe", held=0), process(8252, "dwm.exe", held=44))
-
-        self.assertTrue(draws_here(two))
+    def test_one_card_holding_it_all_draws_the_desktop(self):
+        self.assertEqual((True,), desktops((Mib(3505),)))
 
 
 if __name__ == "__main__":

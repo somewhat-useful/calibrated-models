@@ -10,13 +10,13 @@ import ctypes
 import struct
 import sys
 from ctypes import wintypes
+from collections.abc import Sequence
 from pathlib import Path
 
 from . import desktop, lmstudio, session
 from .lmstudio import Found, Library, Missing
-from .machine import (CARD_FIELDS, Core, CudaIndex, Installed, Machine, Occupancy,
-                      PciAddress,
-                      UnreadableDevice, parse_cards, parse_occupancy)
+from .machine import (CARD_FIELDS, Attached, Core, CudaIndex, Installed, Machine,
+                      Occupancy, UnreadableDevice, parse_cards, parse_occupancy)
 from .nonempty import NonEmpty
 from .proc import run
 from .units import Mib
@@ -83,16 +83,27 @@ def cards() -> NonEmpty[Installed]:
     if not done.out.strip():
         raise UnreadableDevice(f"nvidia-smi said nothing: {done.err.strip()!r}")
 
+    attached = parse_cards(done.out)
     first, *rest = (Installed(index=one.index, card=one.card, capability=one.capability,
-                              draws_desktop=_draws_desktop(one.address),
-                              address=one.address)
-                    for one in parse_cards(done.out))
+                              draws_desktop=drawn, address=one.address)
+                    for one, drawn in zip(attached, _desktops(attached)))
     return NonEmpty(first, *rest)
 
 
-def _draws_desktop(address: PciAddress) -> bool:
-    """Whether the desktop draws on the card at this place on the bus."""
-    return desktop.draws_here(session.running(session.adapter(address)))
+def _desktops(attached: Sequence[Attached]) -> tuple[bool, ...]:
+    """Which of these cards a desktop is drawn on.
+
+    Every card at once, because the counters name every adapter in one reading and what
+    counts as a desktop is a card's share of them. A card Windows lists no display
+    adapter for draws no desktop: a desktop is drawn with an adapter, and it has none.
+    """
+    adapters = tuple(session.adapter(one.address) for one in attached)
+    known = tuple(one for one in adapters if isinstance(one, session.Adapter))
+    if not known:
+        return tuple(False for _ in adapters)
+
+    drawn = dict(zip(known, desktop.desktops(session.held_by(desktop.COMPOSITOR, known))))
+    return tuple(drawn.get(one, False) for one in adapters)
 
 
 def occupancy(index: CudaIndex) -> Occupancy:

@@ -95,7 +95,7 @@ def _scan(settings: Path, force: bool) -> None:
     rows = recommended.parse(files.read(_shipped()), config.DERIVED | config.FLAGS)
 
     named = read.models + read.withheld
-    renames = _renames(read.model_root, named) if force else ()
+    renames = config.renames(named, read.model_root) if force else ()
     renamed = config.renaming(was, renames)
     now = _keys(named, renames, renamed.untouched)
 
@@ -121,41 +121,6 @@ def _scan(settings: Path, force: bool) -> None:
               (*left, *(_Left(one.key, one.why)
                         for one in (*renamed.untouched, *retuned.untouched))))
     _closing(read.model_root, adding, done, fresh, changed=text != was)
-
-
-def _renames(model_root: Path, named: Sequence[Model]) -> tuple[Rename, ...]:
-    """Every entry whose key is not the name the library builds for the file it holds.
-
-    Built for the whole set at once, so that two files which would be called the same
-    both take a longer name. An entry marked manual is left out of it, and so is one
-    whose file sits outside the library: their keys are spoken for, and the names built
-    here step around them.
-    """
-    keyed: dict[PurePath, Key] = {}
-    taken = []
-
-    for one in named:
-        place = _inside(model_root, one)
-        if one.manual or place is None:
-            taken.append(one.key)
-            continue
-        keyed[place] = one.key
-
-    return tuple(Rename(was=keyed[one.place], now=one.key)
-                 for one in library.holds(tuple(keyed), frozenset(taken))
-                 if keyed[one.place] != one.key)
-
-
-def _inside(model_root: Path, model: Model) -> PurePath | None:
-    """Where a model's file sits under the library, or nothing where it sits elsewhere.
-
-    A file kept somewhere else has no place for the naming rule to read a name out of,
-    so its entry keeps the key it has.
-    """
-    try:
-        return PurePath(model.path).relative_to(model_root)
-    except ValueError:
-        return None
 
 
 def _keys(named: Sequence[Model], renames: Sequence[Rename],

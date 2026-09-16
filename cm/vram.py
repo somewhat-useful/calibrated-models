@@ -150,7 +150,7 @@ def _watch(settings: Path) -> None:
     card = _watched(devices.cards())
     offered = catalog.parse(files.read(preset),
                             device_name(Local(card.index, card.card.total)))
-    adapter = session.adapter(card.address)
+    adapter = _adapter(card)
     _accept_escapes()
     keyboard = _keyboard()
     ours = Pid(os.getpid())
@@ -240,6 +240,23 @@ def _still_open(marked: frozenset[Pid], holders: Sequence[Holder]) -> frozenset[
 def _under(holders: Sequence[Holder], at: int) -> Pid:
     """Whose row the cursor is on. No rows, no cursor: 0 is not a process id."""
     return holders[at].pid if holders else Pid(0)
+
+
+def _adapter(card: Installed) -> session.Adapter:
+    """The display adapter of the card this watches.
+
+    A card Windows lists none for is one it counts nothing on, so there is nothing to
+    watch and nothing to close: what holds such a card is invisible from here, and
+    saying so is better than drawing a screen of zeroes.
+    """
+    match session.adapter(card.address):
+        case session.Adapter() as adapter:
+            return adapter
+        case session.NoAdapter():
+            raise ConfigError(
+                f"Windows lists no display adapter for {card.card.name}, so what is "
+                "holding it cannot be read here. A card Windows does not draw with is "
+                "one nothing of the desktop is on.")
 
 
 def _gone(pids: frozenset[Pid], adapter: session.Adapter) -> None:

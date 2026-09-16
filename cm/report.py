@@ -16,10 +16,10 @@ from .rpc import written
 from .units import Mib
 
 
-def opening(card: Card, available: Mib, reserve: Mib) -> str:
-    """What the placements are being computed against."""
-    return (f"{card.name}, {card.total} MiB, {available} MiB placeable, "
-            f"leaving about {reserve} free")
+def opening(card: Card, reserve: Mib) -> str:
+    """What the placements are being computed against: the whole of the card, since all
+    of it is there to be placed on, and what is to be left free on it."""
+    return f"{card.name}, {card.total} MiB, leaving about {reserve} free"
 
 
 def remote(endpoint: Endpoint, available: Mib, reserve: Mib) -> str:

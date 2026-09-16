@@ -17,7 +17,7 @@ from pathlib import Path, PurePath
 from .library import Key
 from .lmstudio import Found, Library, Missing
 from .machine import GIBIBYTE, Budget, Fitted, Fixed, Share
-from . import rpc
+from . import library, rpc
 from .place import (DEFAULT_AMPLE_CTX, DEFAULT_MIN_CTX, DEFAULT_MULTI_GPU_RESERVE,
                     DEFAULT_NO_DESKTOP_RESERVE, DEFAULT_RESERVE, DEFAULT_SLAVE_RESERVE,
                     EVERYTHING, Allowed, CacheType, Endpoint, Worker)
@@ -368,6 +368,50 @@ def retuning(text: str, updating: Sequence[Writing]) -> Retuning:
     return Retuning(text=text, untouched=tuple(untouched))
 
 
+def renames(named: Sequence[Model], model_root: Path) -> tuple[Rename, ...]:
+    """Every entry whose key is not the name the library builds for the file it holds.
+
+    Built for the whole set at once, so that two files which would be called the same
+    both take a longer name. An entry marked manual is left out of it, and so is one
+    whose file sits outside the library or is not a model at all: their keys stay as
+    they are, and are handed to the naming as spoken for so that no built name lands on
+    one of them.
+    """
+    keyed: dict[PurePath, Key] = {}
+    taken = []
+
+    for one in named:
+        place = _under(model_root, one)
+        if one.manual or place is None:
+            taken.append(one.key)
+            continue
+        keyed[place] = one.key
+
+    held = library.holds(tuple(keyed), frozenset(taken))
+    # A file the library does not count as a model -- a projector, a volume after the
+    # first -- is named by nothing, so its entry keeps its key, and the second pass is
+    # what tells the naming to step around it.
+    kept = frozenset(one.place for one in held)
+    passed = frozenset(key for place, key in keyed.items() if place not in kept)
+    if passed:
+        held = library.holds(tuple(keyed), frozenset(taken) | passed)
+
+    return tuple(Rename(was=keyed[one.place], now=one.key)
+                 for one in held if keyed[one.place] != one.key)
+
+
+def _under(model_root: Path, model: Model) -> PurePath | None:
+    """Where a model's file sits under the library, or nothing where it sits elsewhere.
+
+    A file kept somewhere else has no place for the naming rule to read a name out of,
+    so its entry keeps the key it has.
+    """
+    try:
+        return PurePath(model.path).relative_to(model_root)
+    except ValueError:
+        return None
+
+
 def renaming(text: str, renames: Sequence[Rename]) -> Renaming:
     """The settings text with each of these entries keyed as the library names its file.
 
@@ -376,19 +420,36 @@ def renaming(text: str, renames: Sequence[Rename]) -> Renaming:
     and so does the file the entry names -- a rename says what a model is called here,
     never which file that is.
 
+    A name another entry still holds is waited for rather than written over: the entry
+    holding it may be about to move off it, and two entries under one key is a file TOML
+    reads as nothing at all. So renames are applied in rounds, each round writing the
+    ones whose name is free, until a round writes none -- the rest are then holding one
+    another's names in a ring, and every one of them is left alone and named.
+
     An entry this cannot find, one that opens its settings twice, or one carrying a
-    table of its own besides them comes back untouched and named. A key rewritten in one
-    header and left in another is a file that declares two models where there was one,
-    and TOML reads such a file as nothing at all.
+    table of its own besides them is left alone and named as well. A key rewritten in
+    one header and left in another declares two models where there was one.
     """
     untouched = []
+    left = list(renames)
 
-    for one in renames:
-        match _renamed(text, one):
-            case _Renamed(written):
-                text = written
-            case Untouched(_, _) as left:
-                untouched.append(left)
+    while left:
+        waiting, written = [], False
+        for one in left:
+            match _renamed(text, one):
+                case _Renamed(said):
+                    text, written = said, True
+                case _Held():
+                    waiting.append(one)
+                case Untouched(_, _) as refused:
+                    untouched.append(refused)
+
+        if not written:
+            untouched.extend(Untouched(one.was, f"{one.now} is another entry's key")
+                             for one in waiting)
+            break
+
+        left = waiting
 
     return Renaming(text=text, untouched=tuple(untouched))
 
@@ -512,8 +573,17 @@ class _Renamed:
     text: str
 
 
-def _renamed(text: str, rename: Rename) -> _Renamed | Untouched:
+@dataclass(frozen=True)
+class _Held:
+    """The name this rename takes is another entry's, and may yet come free: that entry
+    may itself be waiting to be renamed off it."""
+
+
+def _renamed(text: str, rename: Rename) -> _Renamed | _Held | Untouched:
     lines = text.splitlines()
+
+    if _headers(lines, _ENTRY, rename.now):
+        return _Held()
 
     entry = _headers(lines, _ENTRY, rename.was)
     if len(entry) != 1:

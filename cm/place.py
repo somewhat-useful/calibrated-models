@@ -493,8 +493,8 @@ def head_cost(facts: ModelFacts, cache: CacheType, ctx: Tokens) -> Mib:
     return Mib(round((facts.head.weight_bytes + elements) / 1048576))
 
 
-def requirement(facts: ModelFacts, variant: Variant, ctx: Tokens,
-                answer: Needs) -> NonEmpty[Mib]:
+def requirement(facts: ModelFacts, variant: Variant, ctx: Tokens, answer: Needs,
+                devices: NonEmpty[Device]) -> NonEmpty[Mib]:
     """What the estimator counted on each device, plus what it was never told to count.
 
     The head is the last layer of the model, so it is counted on the last device: its
@@ -503,20 +503,31 @@ def requirement(facts: ModelFacts, variant: Variant, ctx: Tokens,
     them. What a head costs in snapshots of recurrent state depends on where those layers
     are, and is `snapshots`.
 
-    CUDA_CONTEXT is on top of every device: the process holds it wherever it runs, and
-    the estimator is not asked about it because it does not know of it.
+    CUDA_CONTEXT is on top of every card of this machine: the process holds it wherever
+    it runs, and the estimator is not asked about it because it does not know of it. Not
+    on a slave's card, where what that machine keeps is one figure a person wrote and the
+    worker's context is inside it.
     """
     if not variant.head:
-        return _and_context(answer.cards)
+        return _and_context(answer.cards, devices)
 
     *before, last = answer.cards
     drafting = head_cost(facts, variant.cache, ctx) + answer.working.last
-    return _and_context(NonEmpty(*before, Mib(last + drafting)))
+    return _and_context(NonEmpty(*before, Mib(last + drafting)), devices)
 
 
-def _and_context(counted: NonEmpty[Mib]) -> NonEmpty[Mib]:
-    first, *rest = (Mib(one + CUDA_CONTEXT) for one in counted)
+def _and_context(counted: NonEmpty[Mib], devices: NonEmpty[Device]) -> NonEmpty[Mib]:
+    first, *rest = (Mib(one + _context(device))
+                    for one, device in zip(counted, devices))
     return NonEmpty(first, *rest)
+
+
+def _context(device: Device) -> Mib:
+    match device:
+        case Local():
+            return CUDA_CONTEXT
+        case Remote():
+            return Mib(0)
 
 
 def snapshots(facts: ModelFacts, variant: Variant, layout: Layout) -> NonEmpty[Mib]:
@@ -658,7 +669,6 @@ def settings(facts: ModelFacts, allowed: Allowed, limits: Limits,
                         continue
                     if variant in reached and point.ctx <= reached[variant]:
                         continue
-                    reached[variant] = point.ctx
                     chosen.append(Settings(ctx=point.ctx,
                                            cache=variant.cache,
                                            head=variant.head,
@@ -668,7 +678,12 @@ def settings(facts: ModelFacts, allowed: Allowed, limits: Limits,
                 case _Ask() | _Nothing():
                     pass
 
-        kept.extend(_worth_offering(chosen, limits, finest))
+        # What a chain has to beat is what was offered before it, not what was found and
+        # then dropped: a profile nobody is served cannot be the reason another is not.
+        offered = _worth_offering(chosen, limits, finest)
+        for one in offered:
+            reached[Variant(one.cache, one.head)] = one.ctx
+        kept.extend(offered)
 
     return tuple(kept)
 
@@ -1275,7 +1290,8 @@ def _needed(facts: ModelFacts, search: _Search, point: Point, question: Question
             # An answer about other devices than the ones asked about is no answer.
             return _Unanswerable()
         case Needs() as answer:
-            held = requirement(facts, search.variant, point.ctx, answer)
+            held = requirement(facts, search.variant, point.ctx, answer,
+                               question.layout.devices)
             kept = snapshots(facts, search.variant, question.layout)
             first, *rest = (Mib(amount + snapshot) for amount, snapshot in zip(held, kept))
             return NonEmpty(first, *rest)

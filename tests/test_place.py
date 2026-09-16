@@ -89,7 +89,8 @@ def every_point(facts, limits, variant, law):
     """What each point of the grid would leave the card, if it fits at all."""
     for point in place.grid(facts, limits):
         question = Question(point.ctx, variant.cache, point.placement, LAYOUT)
-        needed = place.requirement(facts, variant, point.ctx, law(question)).first
+        needed = place.requirement(facts, variant, point.ctx, law(question),
+                                   LAYOUT.devices).first
         spare = limits.chains.first.first.available - needed
         if spare >= 0:
             yield point, spare
