@@ -190,7 +190,7 @@ class TheChainsAddTheMachinesCardsOneAtATimeThenTheSlave(unittest.TestCase):
 
         self.assertEqual(Mib(2048), seats[CudaIndex(0)].reserve)
 
-    def test_beside_others_a_card_with_no_monitor_is_left_the_reserve_for_one(self):
+    def test_beside_others_a_card_with_no_desktop_is_left_its_own_reserve(self):
         seats = {seat.device.index: seat for seat in local(two())[1]}
 
         self.assertEqual(Mib(512), seats[CudaIndex(1)].reserve)

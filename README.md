@@ -645,7 +645,7 @@ file — and a machine serving one card has no reason to name any of them.
 |---|---|
 | `reserve_mib` | video memory to leave for everything that is not a model, on a machine with one card |
 | `reserve_multi_gpu_mib` | the same where the machine has several cards, on each card a desktop draws on. 2048 |
-| `reserve_no_desktop_mib` | the same on each card none draws on, where the machine has several. 512 |
+| `reserve_no_desktop_mib` | the same on each card none draws on, where the machine has several. 768 |
 | `min_ctx_tokens` | below which a window stops being worth serving |
 | `ample_ctx_tokens` | past which a coarser attention cache buys nothing worth having on a card alone |
 | `cache_ram` | how much system memory the prompt cache may hold |
@@ -711,12 +711,12 @@ fastest card alone did for the same cache and head. Every card added costs speed
 has to buy window; the profiles add up, and which to load is chosen by name. A slave's
 card is the last one added.
 
-With the monitors on an 8 GiB card and a 16 GiB one beside it, `qwen3.8` gets
-`qwen3.8-25k-q8-mtp` and `qwen3.8-37k-q4-mtp` on the 16 GiB card alone and
-`qwen3.8-110k-q8-mtp` across both, while `gemma4-12b`, which holds its whole trained
+With the desktop on an 8 GiB card and a 16 GiB one beside it, `qwen3.8` gets
+`qwen3.8-38k-q8-mtp` and `qwen3.8-65k-q4-mtp` on the 16 GiB card alone and
+`qwen3.8-130k-q8-mtp` across both, while `gemma4-12b`, which holds its whole trained
 window on the 16 GiB card, gets that one profile and nothing across two.
 `ornith-1.5-35b`, a mixture the 16 GiB card alone holds only with experts in system
-memory, gets one profile across both cards, with the experts of 3 layers there.
+memory, gets one profile across both cards, with the experts of 2 layers there.
 
 Three rules follow the cards. Where the machine has a second card, every profile runs
 the prediction head a file carries: dropping it would buy window the second card buys
@@ -744,12 +744,12 @@ process these programs start is told to count in bus order, as `nvidia-smi` does
 A profile on two cards, as `calibrate` writes it, with the sampler values left out:
 
 ```ini
-[qwen3.8-110k-q8-mtp]
-; VRAM REQUIRED: 6164 MiB on CUDA1, 15201 MiB on CUDA0, held from the moment this profile loads
+[qwen3.8-130k-q8-mtp]
+; VRAM REQUIRED: 6127 MiB on CUDA1, 15611 MiB on CUDA0, held from the moment this profile loads
 model = D:\models\unsloth\Qwen3.8-27B-GGUF\Qwen3.8-27B-UD-IQ4_XS.gguf
 cache-type-k = q8_0
 cache-type-v = q8_0
-ctx-size = 110000
+ctx-size = 130000
 device = CUDA1,CUDA0
 fit = off
 gpu-layers = 99
@@ -763,8 +763,8 @@ tensor-split = 21,45
 
 `tensor-split` counts layers per card, in the order `device` names the cards: 21 on the
 older one and 45 on the newer, the output and the head's own layer among the 45. Loaded,
-this profile took 5885 MiB of the 8 GiB card and 15023 of the 16 GiB one -- a little under
-what its requirement says, which is the side `calibrate` errs on. A profile on one card of
+this profile took 6248 MiB of the 8 GiB card and 15371 of the 16 GiB one, each within a
+couple of hundred megabytes of what its requirement says. A profile on one card of
 several names that card too, `device = CUDA0` with `split-mode = none`: left unnamed,
 llama.cpp would take the first card it counts.
 
@@ -774,7 +774,7 @@ What each card is left:
 |---|---|
 | a machine's only card | `reserve_mib` |
 | of several cards, one a desktop draws on | `reserve_multi_gpu_mib`: 2048, enough to work at the desktop while the rest serve |
-| of several cards, one no desktop draws on | `reserve_no_desktop_mib`: 512, what its driver holds for itself, so a card the monitors are moved off serves with all the rest of its memory |
+| of several cards, one no desktop draws on | `reserve_no_desktop_mib`: 768, what the card itself takes, so a card the monitors are moved off serves with all the rest of its memory |
 | a card lent over the network | `reserve_mib` under `[slave]`: 2048, everything its own machine keeps |
 
 A reserve is the whole of what a card is left: what the driver holds for itself is inside

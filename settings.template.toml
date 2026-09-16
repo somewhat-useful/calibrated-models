@@ -73,9 +73,10 @@ reserve_mib = 1024
 # reserve_multi_gpu_mib = 2048
 
 # The same on each card no desktop draws on: nobody works at such a card, so all it is
-# left is what its driver holds for itself. This is what moving the monitors off a card
+# left is what the card itself takes -- what the driver holds whatever runs, and what a
+# loaded process holds for its CUDA context. This is what moving the monitors off a card
 # buys.
-# reserve_no_desktop_mib = 512
+# reserve_no_desktop_mib = 768
 
 # Shortest window worth writing out, in tokens. Below some such length a profile stops
 # being useful, but where exactly is a judgement about the work rather than a fact about

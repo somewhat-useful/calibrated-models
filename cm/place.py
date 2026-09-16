@@ -79,9 +79,11 @@ DEFAULT_RESERVE = Mib(1024)
 DEFAULT_MULTI_GPU_RESERVE = Mib(2048)
 
 # What to leave on each card no desktop draws on, where the machine has several cards:
-# nobody works at such a card, so what its driver holds for itself is all it is left.
-# Moving the desktop off a card is what buys this.
-DEFAULT_NO_DESKTOP_RESERVE = Mib(512)
+# nobody works at such a card, so what the card itself takes is all it is left. Measured
+# on a 16 GiB card: the driver holds 308 MiB of it whatever runs, and a loaded process
+# holds another 120 to 240 for its CUDA context, which appears in no log the loader
+# writes. Moving the desktop off a card is what buys the rest.
+DEFAULT_NO_DESKTOP_RESERVE = Mib(768)
 
 # What to leave on a slave's card: everything its own machine keeps, in one round figure.
 DEFAULT_SLAVE_RESERVE = Mib(2048)
