@@ -79,14 +79,22 @@ DEFAULT_RESERVE = Mib(1024)
 DEFAULT_MULTI_GPU_RESERVE = Mib(2048)
 
 # What to leave on each card no desktop draws on, where the machine has several cards:
-# nobody works at such a card, so what the card itself takes is all it is left. Measured
-# on a 16 GiB card: the driver holds 308 MiB of it whatever runs, and a loaded process
-# holds another 120 to 240 for its CUDA context, which appears in no log the loader
-# writes. Moving the desktop off a card is what buys the rest.
+# nobody works at such a card, so all it is left is what it keeps from everybody. The
+# driver holds 308 MiB of a 16 GiB card whatever runs, measured, and the rest is room for
+# what no estimate foresees -- a graph the loader reserves larger than it said it would.
+# Moving the desktop off a card is what buys the rest.
 DEFAULT_NO_DESKTOP_RESERVE = Mib(768)
 
 # What to leave on a slave's card: everything its own machine keeps, in one round figure.
 DEFAULT_SLAVE_RESERVE = Mib(2048)
+
+# What the CUDA runtime holds on a device before one tensor of a model is placed on it.
+# No estimate mentions it and no log the loader writes has it, and a placement counts it
+# all the same: what a placement says it holds may not be less than what it holds.
+# Measured as the difference between what a profile loaded and what was counted for it:
+# 121 MiB on an RTX 2070, 147 on an RTX 5070 Ti, 240 the largest across the loads on
+# record. The largest, because erring the other way is a profile that does not load.
+CUDA_CONTEXT = Mib(240)
 
 # Shortest window worth writing out, unless the settings file says otherwise. Below some
 # such length a window stops being useful, but where exactly is a judgement about the
@@ -494,13 +502,21 @@ def requirement(facts: ModelFacts, variant: Variant, ctx: Tokens,
     which are never larger than the model's own on that device as the estimator counts
     them. What a head costs in snapshots of recurrent state depends on where those layers
     are, and is `snapshots`.
+
+    CUDA_CONTEXT is on top of every device: the process holds it wherever it runs, and
+    the estimator is not asked about it because it does not know of it.
     """
     if not variant.head:
-        return answer.cards
+        return _and_context(answer.cards)
 
     *before, last = answer.cards
     drafting = head_cost(facts, variant.cache, ctx) + answer.working.last
-    return NonEmpty(*before, Mib(last + drafting))
+    return _and_context(NonEmpty(*before, Mib(last + drafting)))
+
+
+def _and_context(counted: NonEmpty[Mib]) -> NonEmpty[Mib]:
+    first, *rest = (Mib(one + CUDA_CONTEXT) for one in counted)
+    return NonEmpty(first, *rest)
 
 
 def snapshots(facts: ModelFacts, variant: Variant, layout: Layout) -> NonEmpty[Mib]:

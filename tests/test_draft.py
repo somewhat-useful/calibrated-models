@@ -43,15 +43,18 @@ CTX = Tokens(32000)
 
 
 class TheLastDeviceCarriesTheHeadAndItsDraft(unittest.TestCase):
-    def test_without_a_head_the_answer_is_what_the_estimator_said(self):
-        self.assertEqual(ANSWER.cards, place.requirement(HYBRID, UNDRAFTED, CTX, ANSWER))
+    def test_without_a_head_it_is_what_the_estimator_said_and_the_context(self):
+        """The estimator knows nothing of the context CUDA holds on every device it runs
+        on, and a placement that counted less than a profile holds would be wrong."""
+        self.assertEqual(NonEmpty(*(Mib(one + place.CUDA_CONTEXT) for one in ANSWER.cards)),
+                         place.requirement(HYBRID, UNDRAFTED, CTX, ANSWER))
 
     def test_with_one_the_last_device_adds_the_head_and_the_drafts_working_buffers(self):
         needed = place.requirement(HYBRID, DRAFTING, CTX, ANSWER)
 
-        self.assertEqual(ANSWER.cards.first, needed.first)
+        self.assertEqual(ANSWER.cards.first + place.CUDA_CONTEXT, needed.first)
         self.assertEqual(ANSWER.cards.last + place.head_cost(HYBRID, CacheType.Q8_0, CTX)
-                         + ANSWER.working.last, needed.last)
+                         + ANSWER.working.last + place.CUDA_CONTEXT, needed.last)
 
 
 class EveryDeviceKeepsSnapshotsOfItsRecurrentLayers(unittest.TestCase):

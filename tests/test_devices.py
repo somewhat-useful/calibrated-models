@@ -358,7 +358,7 @@ class TheCoarseCacheAndTheHeadFollowTheCards(unittest.TestCase):
         self.assertEqual([CacheType.Q8_0], [one.cache for one in roomy])
 
     def test_alone_a_card_the_fine_cache_does_not_fit_takes_the_coarse_one(self):
-        tight = NonEmpty(card(0, 7450, Capability(12, 0), True))
+        tight = NonEmpty(card(0, 7690, Capability(12, 0), True))
         chosen, _ = run(TIGHT, local(tight), law(TIGHT))
 
         self.assertEqual([CacheType.Q4_0], [one.cache for one in chosen])
@@ -366,7 +366,7 @@ class TheCoarseCacheAndTheHeadFollowTheCards(unittest.TestCase):
     def test_with_a_second_card_the_fine_cache_is_placed_across_cards_never_coarsened(self):
         """The fine cache does not fit on the fastest card: alone it would take the
         coarse one, beside a second card the model is placed on both instead."""
-        chosen, _ = run(TIGHT, local(two(fast=7450, slow=8192)), law(TIGHT))
+        chosen, _ = run(TIGHT, local(two(fast=7690, slow=8192)), law(TIGHT))
 
         self.assertEqual([(2, CacheType.Q8_0)],
                          [(len(one.layout.devices), one.cache) for one in chosen])
@@ -437,7 +437,7 @@ class TheFastestCardLandsNearestItsReserve(unittest.TestCase):
 
                 def miss(count):
                     need, _ = row(question, DENSE.n_layer - count, count, True, micro)
-                    spare = seat.available - round(need)
+                    spare = seat.available - round(need) - place.CUDA_CONTEXT
                     return abs(spare - seat.reserve) if spare >= 0 else None
 
                 chosen_miss = miss(held)
