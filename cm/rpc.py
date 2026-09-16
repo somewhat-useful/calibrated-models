@@ -25,18 +25,34 @@ class Unreadable:
 def endpoint(said: str, port: Port) -> Endpoint | Unreadable:
     """Where a worker is, out of an address as a person types it: a host, or a host and
     a port. A port in the address is the one meant: it was written more recently than
-    the default. A pasted URL is reduced to its host and port."""
+    the default. A pasted URL is reduced to its host and port.
+
+    An address is read at its last colon, which is what a host and a port are written
+    with -- and what an IPv6 address is written with several of. Such an address is
+    refused rather than taken apart: `fe80::1` would read as the host `fe80:` on port 1,
+    and write back as the same text, so nothing about the settings file would look
+    wrong while the worker was never reached.
+    """
     named = said.strip().split("://")[-1].split("/")[0]
     if not named:
         return Unreadable(f"{said!r} names no host")
 
     host, colon, written_port = named.rpartition(":")
     if not colon:
-        return Endpoint(named, port)
+        return Endpoint(named, port) if ":" not in named else _ipv6(said)
+    if ":" in host or host.startswith("["):
+        return _ipv6(said)
     if not host or not written_port.isdigit() or not 1 <= int(written_port) <= 65535:
         return Unreadable(f"{said!r} is not a host, or a host and a port")
 
     return Endpoint(host, Port(int(written_port)))
+
+
+def _ipv6(said: str) -> Unreadable:
+    """An address written with the colons of IPv6, which nothing here reaches a worker
+    over. Named as what it is, because 'not a host and a port' is not what is wrong."""
+    return Unreadable(f"{said!r} is an IPv6 address, which a worker is not reached over "
+                      "here. Name the machine, or its IPv4 address.")
 
 
 def written(endpoint: Endpoint) -> str:

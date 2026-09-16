@@ -98,6 +98,19 @@ class AWorkersAddressIsReadTheWayAPersonTypesIt(unittest.TestCase):
             with self.subTest(said=said):
                 self.assertIsInstance(rpc.endpoint(said, PORT), rpc.Unreadable)
 
+    def test_an_ipv6_address_is_refused_rather_than_taken_apart(self):
+        """An address is read at its last colon, and an IPv6 address is written with
+        several. 'fe80::1' taken apart that way is the host 'fe80:' on port 1, which
+        writes back as the same text -- so the settings file would look right and the
+        worker would never be reached."""
+        for said in ("fe80::1", "::1", "[fe80::1]:50052", "[fe80::1]"):
+            with self.subTest(said=said):
+                match rpc.endpoint(said, PORT):
+                    case rpc.Unreadable(why):
+                        self.assertIn("IPv6", why)
+                    case Endpoint() as taken:
+                        raise AssertionError(f"{said} was read as {taken}")
+
     def test_an_address_written_out_reads_back_as_itself(self):
         endpoint = Endpoint("worker", Port(50060))
 
