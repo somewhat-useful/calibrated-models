@@ -15,7 +15,7 @@ from cm.name import names
 from cm.nonempty import NonEmpty
 from cm.place import CacheType, ExpertsOnCpu, Settings, WholeCard
 from cm.render import Placed
-from cm.report import about, closing, opening, system
+from cm.report import about, closing, missing, opening, system
 from cm.units import Layers, Mib, Tokens
 from one_card import LAYOUT
 from places import somewhere
@@ -60,6 +60,22 @@ class WhatThePlacementsWereComputedAgainstIsSaidFirst(unittest.TestCase):
         self.assertIn("15903", line)
         self.assertIn("2048", line)
         self.assertNotIn("11888", line)
+
+
+class AModelWhoseFileIsGoneIsSaidToBeGone(unittest.TestCase):
+    """An entry outlives the file it names: scan never removes one, and a model deleted
+    from the library keeps its entry. So the run says which entry and carries on."""
+
+    GONE = Path("D:") / "models" / "publisher" / "repository" / "model-Q4_K_M.gguf"
+
+    def test_it_names_the_entry_and_where_the_file_is_not(self):
+        said = missing("ornith-1.0-35b-q4km", self.GONE)
+
+        self.assertIn("ornith-1.0-35b-q4km", said)
+        self.assertIn(str(self.GONE), said)
+
+    def test_it_says_nothing_is_placed_for_it(self):
+        self.assertIn("nothing is placed for it", missing("m", self.GONE))
 
 
 class AModelThatGotNothingIsStillReported(unittest.TestCase):

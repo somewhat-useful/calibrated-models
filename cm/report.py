@@ -37,6 +37,14 @@ def unreachable(endpoint: Endpoint) -> str:
             "python -m cm.slave start")
 
 
+def missing(key: str, path: Path) -> str:
+    """A model whose file is not where its entry says. Nothing is placed for it and the
+    run carries on: an entry outlives the file it names -- scan never removes one -- and
+    the other models are still to place."""
+    return (f"{key}: no file at {path}, so nothing is placed for it. Fetch the file "
+            "again, or take the entry out of the settings file.")
+
+
 def system(memory: SystemMemory) -> str:
     """What the machine has to hold prefixes in, once the weights have had their share.
 

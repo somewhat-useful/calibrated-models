@@ -72,9 +72,16 @@ def _calibrate(settings: Path) -> None:
 
     placed = []
     for model in read.models:
+        if not files.exists(model.path):
+            print(report.missing(model.key, model.path))
+            continue
+
         one = _place(estimator, read, model, limits)
         placed.append(one)
         print("\n".join(report.about(one)))
+
+    if not placed:
+        raise ConfigError(_nothing_is_there(settings, read))
 
     memory = system_memory(read.cache_ram, machine,
                            Mib(max((one.resident for one in placed), default=0)))
@@ -95,6 +102,17 @@ def _names_nothing(settings: Path, read: Config) -> str:
 
     return (f"{settings.name} names no model, so there is nothing to place.\n"
             "Write an entry for everything in the library: python -m cm.scan")
+
+
+def _nothing_is_there(settings: Path, read: Config) -> str:
+    """Every model named, and not one file where its entry says.
+
+    The preset is left as it was rather than written empty: a router with nothing to
+    serve is not what a library gone missing means, and the run says so instead.
+    """
+    return (f"Not one of the {len(read.models)} model(s) {settings.name} names has its "
+            f"file under {read.model_root}, so there is nothing to place and the preset "
+            "is left as it was.")
 
 
 def _reachable(slave: NoSlave | Worker) -> tuple[Worker, ...]:
@@ -147,9 +165,6 @@ def _estimator(engines: Path) -> Path:
 
 def _place(estimator: Path, read: Config, model: Model, limits: Limits) -> Placed:
     """One model, asked about until the core stops asking."""
-    if not files.exists(model.path):
-        raise ConfigError(f"{model.key}: file not found: {model.path}")
-
     facts = parse_facts(proc.run(invoke.facts_argv(estimator, model.path)).err)
 
     answers = {}
