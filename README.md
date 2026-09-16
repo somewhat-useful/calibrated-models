@@ -782,6 +782,10 @@ that figure rather than taken off beside it, which is why one number is enough t
 down. Every one of these is a target to land near rather than a line to clear: a layer
 that fits by landing a few megabytes under goes on.
 
+Where nobody is logged in, no desktop draws on any card and every card of several is left
+what a card without one is. That is a machine given over to serving, and logging out of it
+is how to ask for that.
+
 Which card a desktop draws on is read from Windows' own counters, as the card the
 compositor holds video memory on. Not from the monitors: over a remote session Windows
 detaches the machine's own, and `nvidia-smi` then reports none on any card while the
