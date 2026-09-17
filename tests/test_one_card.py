@@ -119,6 +119,7 @@ ubatch-size = 512
 [dense-115k-q4]
 ; VRAM REQUIRED: 15284 MiB of video memory, held from the moment this profile loads
 model = {dense}
+cache-ram = 56320
 cache-type-k = q4_0
 cache-type-v = q4_0
 ctx-size = 115000
@@ -129,6 +130,7 @@ temp = 1.0
 [dense-33k-q8-mtp]
 ; VRAM REQUIRED: 15294 MiB of video memory, held from the moment this profile loads
 model = {dense}
+cache-ram = 56320
 cache-type-k = q8_0
 cache-type-v = q8_0
 ctx-size = 33000
@@ -143,6 +145,7 @@ temp = 1.0
 [dense-61k-q8]
 ; VRAM REQUIRED: 15290 MiB of video memory, held from the moment this profile loads
 model = {dense}
+cache-ram = 56320
 cache-type-k = q8_0
 cache-type-v = q8_0
 ctx-size = 61000
@@ -153,6 +156,7 @@ temp = 1.0
 [dense-62k-q4-mtp]
 ; VRAM REQUIRED: 15284 MiB of video memory, held from the moment this profile loads
 model = {dense}
+cache-ram = 56320
 cache-type-k = q4_0
 cache-type-v = q4_0
 ctx-size = 62000
@@ -167,6 +171,7 @@ temp = 1.0
 [mixture]
 ; VRAM REQUIRED: 15281 MiB of video memory, held from the moment this profile loads
 model = {mixture}
+cache-ram = 50176
 cache-type-k = q8_0
 cache-type-v = q8_0
 ctx-size = 131000
@@ -178,6 +183,7 @@ temp = 1.0
 [short]
 ; VRAM REQUIRED: 742 MiB of video memory, held from the moment this profile loads
 model = {short}
+cache-ram = 56320
 cache-type-k = q8_0
 cache-type-v = q8_0
 ctx-size = 20000

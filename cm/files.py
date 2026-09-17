@@ -90,6 +90,16 @@ def length(path: Path) -> Bytes:
     return Bytes(path.stat().st_size)
 
 
+def head(path: Path, count: Bytes) -> bytes:
+    """The first bytes of a file, or all of it where it is shorter than that.
+
+    For files nothing here reads whole: a model is gibibytes of weights behind a header
+    of kilobytes, and the header is all this program has ever needed of one.
+    """
+    with path.open("rb") as handle:
+        return handle.read(count)
+
+
 def size(path: Path) -> Bytes:
     """How much there is under this directory, in bytes."""
     return Bytes(sum(entry.stat().st_size

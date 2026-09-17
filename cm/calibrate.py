@@ -8,17 +8,17 @@ that ends up in the preset was computed against the card in this machine.
 
 import argparse
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from . import (devices, files, invoke, place, proc, reach, reading, releases, render,
-               report, workspace)
+               report, weights, workspace)
 from .config import Config, ConfigError, Model, NoSlave
-from .estimate import parse_requirement
+from .estimate import Requirement, parse_requirement
 from .facts import parse_facts
 from .machine import Machine, UnreadableDevice, off_card, system_memory
 from .name import names
-from .place import Limits, Local, Remote, Reserves, Worker
+from .place import Limits, Local, Question, Remote, Reserves, Settings, Worker
 from .render import Placed
 from .units import Mib
 
@@ -179,7 +179,22 @@ def _place(estimator: Path, read: Config, model: Model, limits: Limits) -> Place
             answers[question] = parse_requirement(proc.run(argv).out)
 
     chosen = place.settings(facts, model.allowed, limits, answers)
-    return Placed(model, names(model.key, chosen), place.resident(chosen, answers))
+    return Placed(model, names(model.key, chosen), _resident(read, model, chosen, answers))
+
+
+def _resident(read: Config, model: Model, chosen: Sequence[Settings],
+              answers: Mapping[Question, Requirement]) -> Mib:
+    """What a model keeps in system memory, less what is never held there.
+
+    The estimator counts a tensor llama.cpp reads row by row as memory like any other,
+    so its answer is too big by exactly those tensors -- unless the settings file has
+    asked for them to be held after all, which is the one case the file wins.
+    """
+    held = place.resident(chosen, answers)
+    if read.shared.get("lazy-mode") == weights.HELD:
+        return held
+
+    return Mib(max(0, held - weights.on_demand(model.path)))
 
 
 if __name__ == "__main__":

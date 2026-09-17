@@ -13,7 +13,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from .config import Config, ConfigError, Model, Value
-from .machine import Machine, SystemMemory, threads
+from .machine import Machine, SystemMemory, system_memory, threads
 from .name import Profile
 from .place import (DRAFT_LOOKAHEAD, NO_TENSOR, Among, ExpertsOnCpu, Layout, Settings,
                     device_name, endpoints, holds, micro_batch, runs_apart_by_override)
@@ -42,6 +42,9 @@ REQUIRED = "VRAM REQUIRED"
 # varies. 99 is how llama.cpp spells "all of them".
 GPU_LAYERS = 99
 
+# What llama.cpp calls the memory a server may hold cached prompts in.
+CACHE = "cache-ram"
+
 
 @dataclass(frozen=True)
 class Placed:
@@ -68,16 +71,16 @@ def preset(config: Config, machine: Machine, memory: SystemMemory,
     profile of `qwen3.8`. Here is where every name is visible at once, so here is where
     that is refused.
     """
-    sections: dict[str, tuple[Model, Settings]] = {}
+    sections: dict[str, tuple[Placed, Settings]] = {}
     for one in placed:
         for profile in one.profiles:
             if profile.name in sections:
                 raise ConfigError(f"duplicate section: {profile.name}")
-            sections[profile.name] = (one.model, profile.settings)
+            sections[profile.name] = (one, profile.settings)
 
     blocks = [_block("*", (), _shared(config, machine, memory))]
-    blocks += [_block(name, _needs(settings), _section(config, model, settings))
-               for name, (model, settings) in sorted(sections.items())]
+    blocks += [_block(name, _needs(settings), _section(config, machine, one, settings))
+               for name, (one, settings) in sorted(sections.items())]
 
     return "\n\n".join([HEADER, "version = 1", *blocks]) + "\n"
 
@@ -91,7 +94,7 @@ def _shared(config: Config, machine: Machine,
     make -- the reading knows how many fast cores there are, not what else is using them.
     """
     keys: dict[str, Value] = {
-        "cache-ram": memory.cache,
+        CACHE: memory.cache,
         "threads": threads(machine.cores),
         "threads-batch": threads(machine.cores),
         # Only reached by a model with no profile of its own, which is placed by the
@@ -102,15 +105,20 @@ def _shared(config: Config, machine: Machine,
     return keys
 
 
-def _section(config: Config, model: Model, settings: Settings) -> Mapping[str, Value]:
+def _section(config: Config, machine: Machine, placed: Placed,
+             settings: Settings) -> Mapping[str, Value]:
     """One profile: where the file is, how it is placed, and what its vendor asked for.
 
     The placement is written out in full rather than left to be inherited from [*].
     A section says how it runs, and editing the shared block should not silently move a
     window that was computed for this card.
+
+    The prompt cache is written here too, and it is this model's own: the router holds
+    one model at a time, so what is left for prefixes is what this model's weights do
+    not keep, and a heavier model elsewhere in the file is not its business.
     """
     keys: dict[str, Value] = {
-        "model": str(model.path),
+        "model": str(placed.model.path),
         "ctx-size": settings.ctx,
         # The placement is already decided; the loader must not decide it again.
         "fit": "off",
@@ -131,9 +139,24 @@ def _section(config: Config, model: Model, settings: Settings) -> Mapping[str, V
         keys["spec-draft-type-k"] = settings.cache.value
         keys["spec-draft-type-v"] = settings.cache.value
 
+    keys.update(_cache(config, machine, placed))
     keys.update(_layout(config, settings.layout))
-    keys.update(model.vendor)
+    keys.update(placed.model.vendor)
     return keys
+
+
+def _cache(config: Config, machine: Machine, placed: Placed) -> Mapping[str, Value]:
+    """What this model leaves for cached prompts, where the file has not said.
+
+    The router holds one model at a time, so what is left is what this model's own
+    weights do not keep in system memory, and a heavier model elsewhere in the preset
+    is none of its business. A size written into the shared block is a person's
+    judgement about the whole machine and stands for every model, this one included.
+    """
+    if CACHE in config.shared:
+        return {}
+
+    return {CACHE: system_memory(config.cache_ram, machine, placed.resident).cache}
 
 
 def _layout(config: Config, layout: Layout) -> Mapping[str, Value]:

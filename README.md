@@ -672,11 +672,12 @@ file — and a machine serving one card has no reason to name any of them.
 
 `cache_ram` is written the way anyone would write it — `32`, `32G`, `32Gb`, `32GiB` for a
 size in gibibytes, `50%` for a share of the memory installed. Leave it out and it is
-worked out: what the machine has, less the weights the heaviest profile keeps off the
-card, less a share for the system. Written down by name, it is room the weights may not
-take either: a model is placed within what is left after it. Half the memory, which is
-what an older version of this used, is not the answer on a machine whose job is serving
-models with nobody logged in.
+worked out for each model on its own: what the machine has, less the weights that model
+keeps off the card, less a share for the system. Written down by name, it is room the
+weights may not take either: a model is placed within what is left after it, and every
+profile is given the size as written. Half the memory, which is what an older version of
+this used, is not the answer on a machine whose job is serving models with nobody logged
+in.
 
 **The slave**, where another machine lends its card: a `[slave]` table saying where its
 worker listens, how much memory its card has and how much of it to leave.
@@ -713,7 +714,7 @@ The settings file is yours and is not in the repository. The template is.
 | the micro-batch a profile runs at | `ubatch-size` from `[shared]`, halved down to 128 only where the window it buys is worth the prefill it costs |
 | whether several cards run pieces of a prompt at once | yes, unless the window without it is at least 30% longer |
 | `threads` and `threads-batch` | the logical processors of the fastest cores. Not all of them: the thread pool is synchronised by a barrier, so work spread onto slow cores is work the rest wait for |
-| `cache-ram` | the memory installed, less what the heaviest placement keeps outside the card, less a share for the system |
+| `cache-ram` | per profile: the memory installed, less what that model keeps outside the card, less a share for the system. `[*]` carries the same worked out for the heaviest model, which is what one with no profile of its own is left |
 
 A placement is never narrowed to fit around a browser: what fits is worked out against
 each card's total, so it does not matter what is open while `calibrate` runs. Whether a model
@@ -757,6 +758,14 @@ system's own share of 8 GiB, less a `cache_ram` written down by name -- because 
 counted on but not held are read off the disk for every token, or fail to be locked
 where `load-mode` asks for them to be. A model whose heaviest profile wants more than
 that is left out of the preset, and the run says so under its name.
+
+Not everything the estimator counts there is held there. An architecture may mark a
+tensor as read row by row -- the table of per-layer embeddings is one, and on a 87 GiB
+file it is 27 of them -- and llama.cpp maps it and fetches the rows a token asks for,
+whatever `load-mode` says. The estimator counts it as memory all the same, its
+memory-fit pass allocating nothing and mapping nothing, so the model's own file is read
+here and those tensors come off what a placement is said to need. `lazy-mode = off` in
+the shared block asks llama.cpp to hold them after all, and then nothing is taken off.
 
 The cards of a profile run slowest first, the order they were added in reversed, and a
 model's layers pass through them in that order. The last card is the one that works

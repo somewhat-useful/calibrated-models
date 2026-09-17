@@ -195,10 +195,12 @@ def system_memory(budget: Budget, machine: Machine, resident: Mib) -> SystemMemo
     healthy. A mixture of experts is where this bites, since the experts held in system
     memory are read for every token generated.
 
-    So a fitted budget counts the heaviest such placement -- one model is resident at a
-    time, so the heaviest is the one to leave room for -- and hands the system its share
-    on top. A size or a percentage written down is taken as written: it is a judgement
-    about this machine, and the settings file is where a person makes one.
+    So a fitted budget counts what one placement keeps and hands the system its share
+    on top. Which placement is the caller's business: the router holds one model at a
+    time, so a profile is left what its own model does not keep, and the shared block
+    of the preset -- read by a model that has no profile of its own -- is left what the
+    heaviest does not. A size or a percentage written down is taken as written: it is a
+    judgement about this machine, and the settings file is where a person makes one.
     """
     match budget:
         case Fixed(size):
