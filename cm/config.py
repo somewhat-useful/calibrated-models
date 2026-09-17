@@ -17,8 +17,10 @@ from pathlib import Path, PurePath
 from .library import Key
 from .lmstudio import Found, Library, Missing
 from .machine import GIBIBYTE, Budget, Fitted, Fixed, Share
-from .place import (DEFAULT_AMPLE_CTX, DEFAULT_MIN_CTX, DEFAULT_RESERVE, EVERYTHING,
-                    Allowed, CacheType)
+from . import library, rpc
+from .place import (DEFAULT_AMPLE_CTX, DEFAULT_MIN_CTX, DEFAULT_MULTI_GPU_RESERVE,
+                    DEFAULT_NO_DESKTOP_RESERVE, DEFAULT_RESERVE, DEFAULT_SLAVE_RESERVE,
+                    EVERYTHING, Allowed, CacheType, Endpoint, Worker)
 from .recommended import Advised, Recommended, Setting, Unknown
 from .serving import (DEFAULT_HOST, DEFAULT_IDLE, DEFAULT_PORT, DEFAULT_RESIDENT, LOGS,
                       Serving)
@@ -37,6 +39,7 @@ DERIVED = frozenset({
     "model", "ctx-size", "cache-type-k", "cache-type-v", "gpu-layers", "n-cpu-moe",
     "fit", "fit-target", "spec-type", "spec-draft-n-max", "spec-draft-type-k",
     "spec-draft-type-v", "threads", "threads-batch", "cache-ram",
+    "device", "split-mode", "tensor-split", "ubatch-size", "rpc", "override-tensor",
 })
 
 
@@ -110,6 +113,11 @@ class Model:
 
 
 @dataclass(frozen=True)
+class NoSlave:
+    """The file names no slave: every placement is on this machine's own cards."""
+
+
+@dataclass(frozen=True)
 class Config:
     """The settings file, read."""
 
@@ -128,6 +136,12 @@ class Config:
     # Entries set aside with hidden = true. Nothing is placed or served for them; they
     # are here so scan can see that their files are already named and leave them alone.
     withheld: tuple[Model, ...]
+    # What to leave on each card driving a monitor, where the machine has several.
+    reserve_multi_gpu: Mib = DEFAULT_MULTI_GPU_RESERVE
+    # What to leave on each card driving none, where the machine has several.
+    reserve_no_desktop: Mib = DEFAULT_NO_DESKTOP_RESERVE
+    # The machine lending its card, where the file names one.
+    slave: NoSlave | Worker = NoSlave()
 
 
 def parse(text: str, library: Library) -> Config:
@@ -169,7 +183,35 @@ def parse(text: str, library: Library) -> Config:
         shared=shared,
         models=tuple(one.model for one in read if not one.hidden),
         withheld=tuple(one.model for one in read if one.hidden),
+        reserve_multi_gpu=Mib(_whole(raw, "reserve_multi_gpu_mib",
+                                     DEFAULT_MULTI_GPU_RESERVE)),
+        reserve_no_desktop=Mib(_whole(raw, "reserve_no_desktop_mib",
+                                      DEFAULT_NO_DESKTOP_RESERVE)),
+        slave=_slave(raw),
     )
+
+
+@dataclass(frozen=True)
+class Lending:
+    """What a machine lending its card reads from its settings file: which releases it
+    installs and keeps, and where its worker writes."""
+
+    cuda: Cuda
+    keep_releases: int
+    logs: Path
+
+
+def lending(text: str) -> Lending:
+    """The settings text as a slave reads it.
+
+    None of it has to be there, and neither does the file: a machine lending its card
+    names no model and keeps no library, and every key a slave reads has a default.
+    """
+    raw = tomllib.loads(text)
+
+    return Lending(cuda=Cuda(_text(raw, "cuda_version", DEFAULT_CUDA.version)),
+                   keep_releases=_whole(raw, "keep_releases", DEFAULT_KEPT),
+                   logs=_logs(raw))
 
 
 def naming_the_library(text: str, models: Path) -> str:
@@ -267,6 +309,31 @@ class Retuning:
     untouched: tuple[Untouched, ...]
 
 
+@dataclass(frozen=True)
+class Rename:
+    """One entry's key as it stands, and as the library names the file it holds."""
+
+    was: Key
+    now: Key
+
+
+@dataclass(frozen=True)
+class Removing:
+    """The settings text with entries taken out, and the ones that could not be."""
+
+    text: str
+    untouched: tuple[Untouched, ...]
+
+
+@dataclass(frozen=True)
+class Renaming:
+    """The settings text after every entry that could be renamed was, and the ones that
+    could not."""
+
+    text: str
+    untouched: tuple[Untouched, ...]
+
+
 def naming(text: str, adding: Sequence[Writing]) -> str:
     """The settings text with an entry appended for each of these models.
 
@@ -307,6 +374,118 @@ def retuning(text: str, updating: Sequence[Writing]) -> Retuning:
                 untouched.append(left)
 
     return Retuning(text=text, untouched=tuple(untouched))
+
+
+def renames(named: Sequence[Model], model_root: Path) -> tuple[Rename, ...]:
+    """Every entry whose key is not the name the library builds for the file it holds.
+
+    Built for the whole set at once, so that two files which would be called the same
+    both take a longer name. An entry marked manual is left out of it, and so is one
+    whose file sits outside the library or is not a model at all: their keys stay as
+    they are, and are handed to the naming as spoken for so that no built name lands on
+    one of them.
+    """
+    keyed: dict[PurePath, Key] = {}
+    taken = []
+
+    for one in named:
+        place = _under(model_root, one)
+        if one.manual or place is None:
+            taken.append(one.key)
+            continue
+        keyed[place] = one.key
+
+    held = library.holds(tuple(keyed), frozenset(taken))
+    # A file the library does not count as a model -- a projector, a volume after the
+    # first -- is named by nothing, so its entry keeps its key, and the second pass is
+    # what tells the naming to step around it.
+    kept = frozenset(one.place for one in held)
+    passed = frozenset(key for place, key in keyed.items() if place not in kept)
+    if passed:
+        held = library.holds(tuple(keyed), frozenset(taken) | passed)
+
+    return tuple(Rename(was=keyed[one.place], now=one.key)
+                 for one in held if keyed[one.place] != one.key)
+
+
+def _under(model_root: Path, model: Model) -> PurePath | None:
+    """Where a model's file sits under the library, or nothing where it sits elsewhere.
+
+    A file kept somewhere else has no place for the naming rule to read a name out of,
+    so its entry keeps the key it has.
+    """
+    try:
+        return PurePath(model.path).relative_to(model_root)
+    except ValueError:
+        return None
+
+
+def removing(text: str, keys: Sequence[Key]) -> Removing:
+    """The settings text with the entry for each of these models taken out.
+
+    An entry outlives the file it names for exactly as long as it takes to notice: a
+    model whose file is not there is not a model this machine has, and an entry naming
+    nothing is something every later run has to say a line about. Both tables go, the
+    entry's own and its settings block, along with what stands above the header and
+    introduces it -- a note there is about the model named below it, and left behind it
+    would describe something the file no longer holds.
+
+    An entry this cannot find, or one that carries a table besides its settings, is
+    left alone and named: cutting part of an entry out would leave the rest declaring a
+    model whose file nothing names.
+    """
+    untouched = []
+
+    for key in keys:
+        match _removed(text, key):
+            case _Removed(written):
+                text = written
+            case Untouched(_, _) as left:
+                untouched.append(left)
+
+    return Removing(text=text, untouched=tuple(untouched))
+
+
+def renaming(text: str, renames: Sequence[Rename]) -> Renaming:
+    """The settings text with each of these entries keyed as the library names its file.
+
+    Two lines of an entry change and nothing else: its own header and its settings
+    block's. What a person wrote under either of them is theirs and stays where it is,
+    and so does the file the entry names -- a rename says what a model is called here,
+    never which file that is.
+
+    A name another entry still holds is waited for rather than written over: the entry
+    holding it may be about to move off it, and two entries under one key is a file TOML
+    reads as nothing at all. So renames are applied in rounds, each round writing the
+    ones whose name is free, until a round writes none -- the rest are then holding one
+    another's names in a ring, and every one of them is left alone and named.
+
+    An entry this cannot find, one that opens its settings twice, or one carrying a
+    table of its own besides them is left alone and named as well. A key rewritten in
+    one header and left in another declares two models where there was one.
+    """
+    untouched = []
+    left = list(renames)
+
+    while left:
+        waiting, written = [], False
+        for one in left:
+            match _renamed(text, one):
+                case _Renamed(said):
+                    text, written = said, True
+                case _Held():
+                    waiting.append(one)
+                case Untouched(_, _) as refused:
+                    untouched.append(refused)
+
+        if not written:
+            untouched.extend(Untouched(one.was, f"{one.now} is another entry's key")
+                             for one in waiting)
+            break
+
+        left = waiting
+
+    return Renaming(text=text, untouched=tuple(untouched))
 
 
 def _entry_written(writing: Writing) -> str:
@@ -419,6 +598,95 @@ def _retuned(text: str, writing: Writing) -> _Retuned | Untouched:
                                        *lines[ends:]]) + "\n")
         case _:
             return Untouched(key, "it opens its settings block more than once")
+
+
+@dataclass(frozen=True)
+class _Renamed:
+    """The whole text, with one entry keyed as the library names its file."""
+
+    text: str
+
+
+@dataclass(frozen=True)
+class _Held:
+    """The name this rename takes is another entry's, and may yet come free: that entry
+    may itself be waiting to be renamed off it."""
+
+
+def _renamed(text: str, rename: Rename) -> _Renamed | _Held | Untouched:
+    lines = text.splitlines()
+
+    if _headers(lines, _ENTRY, rename.now):
+        return _Held()
+
+    entry = _headers(lines, _ENTRY, rename.was)
+    if len(entry) != 1:
+        return Untouched(rename.was, f'no one [models."{rename.was}"] line to rename')
+
+    blocks = _headers(lines, _SETTINGS, rename.was)
+    if len(blocks) > 1:
+        return Untouched(rename.was, "it opens its settings block more than once")
+
+    under = tuple(index for index, line in enumerate(lines)
+                  if (said := _UNDER.match(line)) is not None
+                  and _unquoted(said.group("key")) == rename.was)
+    if any(index not in blocks for index in under):
+        return Untouched(rename.was, "it carries a table besides its settings")
+
+    written = list(lines)
+    written[entry[0]] = f"[models.{_quoted(rename.now)}]"
+    for block in blocks:
+        written[block] = f"[models.{_quoted(rename.now)}.{_SETTINGS_KEY}]"
+
+    return _Renamed("\n".join(written) + "\n")
+
+
+@dataclass(frozen=True)
+class _Removed:
+    """The whole text, with one entry no longer in it."""
+
+    text: str
+
+
+def _removed(text: str, key: Key) -> _Removed | Untouched:
+    lines = text.splitlines()
+
+    entry = _headers(lines, _ENTRY, key)
+    if len(entry) != 1:
+        return Untouched(key, f'no one [models."{key}"] line to remove')
+
+    opened = entry[0]
+    closed = _closed(lines, opened, key)
+    blocks = _headers(lines, _SETTINGS, key)
+    if any(index < opened or index > closed for index in blocks):
+        return Untouched(key, "its settings block is not under its entry")
+
+    under = tuple(index for index, line in enumerate(lines)
+                  if (said := _UNDER.match(line)) is not None
+                  and _unquoted(said.group("key")) == key)
+    if any(index not in blocks for index in under):
+        return Untouched(key, "it carries a table besides its settings")
+
+    ends = _before(lines, range(opened + 1, closed))
+
+    kept = [*lines[:_separating(lines, opened)], *lines[ends:]]
+
+    return _Removed("\n".join(kept) + "\n")
+
+
+def _separating(lines: Sequence[str], opened: int) -> int:
+    """Where an entry starts once what introduces it is counted as its own.
+
+    The run of comments and blank lines above a header is what stands between the entry
+    before and this one: the note is about the model it introduces, the same way the
+    ones scan writes under the header are. Left behind, it would say something about a
+    model the file no longer names.
+    """
+    starts = opened
+    while starts > 0 and _INTRODUCES.match(lines[starts - 1]):
+        starts -= 1
+
+    return starts
 
 
 def _headers(lines: Sequence[str], header: re.Pattern[str], key: Key) -> tuple[int, ...]:
@@ -627,6 +895,104 @@ def _written(text: str) -> Budget:
     if amount > 100:
         raise ConfigError("cache_ram: a share over 100% is more memory than there is")
     return Share(amount)
+
+
+SLAVE = "slave"
+
+_SLAVE_MEMORY = "slave: memory is the size of its card in gibibytes: 12, '12G' or '12GiB'"
+
+
+def _slave(raw: Mapping[str, object]) -> NoSlave | Worker:
+    """The machine lending its card, where the file names one.
+
+    The address and the memory have to be written; what is left on the card has a
+    default. The memory is a person's round figure for that card, since nothing on this
+    machine can read it.
+    """
+    if SLAVE not in raw:
+        return NoSlave()
+
+    table = raw[SLAVE]
+    if not isinstance(table, dict):
+        raise ConfigError("slave must be a table: [slave], with address = and memory = "
+                          "under it")
+
+    said = table.get("address")
+    if not isinstance(said, str) or not said.strip():
+        raise ConfigError("slave: address is not set")
+
+    match rpc.endpoint(said, rpc.DEFAULT_PORT):
+        case rpc.Unreadable(why):
+            raise ConfigError(f"slave: address {why}")
+        case Endpoint() as reached:
+            pass
+
+    reserve = table.get("reserve_mib", DEFAULT_SLAVE_RESERVE)
+    if isinstance(reserve, bool) or not isinstance(reserve, int) or reserve < 0:
+        raise ConfigError("slave: reserve_mib must be a whole number")
+
+    return Worker(endpoint=reached, memory=gibibytes(table.get("memory")),
+                  reserve=Mib(reserve))
+
+
+def gibibytes(size: object) -> Mib:
+    """A slave's memory as a person writes it: 12, '12G', '12Gb' or '12GiB'."""
+    if isinstance(size, int) and not isinstance(size, bool) and size > 0:
+        return Mib(size * GIBIBYTE)
+
+    if isinstance(size, str):
+        read = _SIZE.match(size.strip())
+        if read is not None and read[2] != "%" and int(read[1]) > 0:
+            return Mib(int(read[1]) * GIBIBYTE)
+
+    raise ConfigError(_SLAVE_MEMORY)
+
+
+# The slave's own table, and the slave written any way at all: as that table, as a table
+# under it, as a key given a value, or through a dot.
+_SLAVE_TABLE = re.compile(r"^\[slave\]\s*$")
+_SLAVE_ANYHOW = re.compile(r"^\s*(\[slave[.\]\s]|slave\s*[.=])")
+
+
+def slaved(text: str, worker: Worker) -> str:
+    """The settings text naming this slave, in place of any it named before.
+
+    Appended at the end: a table can stand anywhere after the keys at the top, and the
+    end is the one place that is never inside somebody's own table.
+    """
+    block = ["[slave]",
+             f"address     = {_quoted(rpc.written(worker.endpoint))}",
+             f"memory      = {_quoted(f'{worker.memory // GIBIBYTE}G')}",
+             f"reserve_mib = {worker.reserve}"]
+
+    return "\n".join([unslaved(text).rstrip("\n"), "", "", *block]) + "\n"
+
+
+def unslaved(text: str) -> str:
+    """The settings text naming no slave.
+
+    A slave written in a way this cannot take out whole -- inline, dotted, or opened more
+    than once -- is refused rather than half removed: TOML reads a table declared twice
+    as no file at all. What introduces whatever follows the table stays.
+    """
+    lines = text.splitlines()
+    opened = tuple(index for index, line in enumerate(lines) if _SLAVE_TABLE.match(line))
+    anyhow = tuple(index for index, line in enumerate(lines) if _SLAVE_ANYHOW.match(line))
+
+    if anyhow != opened or len(opened) > 1:
+        raise ConfigError("the settings file names its slave in a form that cannot be "
+                          "rewritten; edit its [slave] by hand")
+    if not opened:
+        return text
+
+    start = opened[0]
+    closed = next((index for index in range(start + 1, len(lines))
+                   if _TABLE.match(lines[index])), len(lines))
+    ends = _before(lines, range(start + 1, closed))
+    while start > 0 and not lines[start - 1].strip():
+        start -= 1
+
+    return "\n".join([*lines[:start], *lines[ends:]]) + "\n"
 
 
 def _whole(raw: Mapping[str, object], key: str, fallback: int) -> int:

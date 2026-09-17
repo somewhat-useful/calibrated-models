@@ -8,9 +8,10 @@ processor is not an arithmetic.
 import unittest
 
 from cm.machine import (SYSTEM_SHARE, Card, Core, Fitted, Fixed, Machine,
-                        Share, SystemMemory, UnreadableDevice,
+                        Share, SystemMemory, UnreadableDevice, off_card,
                         parse_occupancy, system_memory, threads)
 from cm.units import Mib
+from one_card import installed
 
 # What the two machines the reference file was written for report.
 DESKTOP = tuple([Core(1, 2)] * 8 + [Core(0, 1)] * 8)      # i7-13700F, 8P + 8E
@@ -21,7 +22,7 @@ NO_HYBRID = tuple([Core(0, 2)] * 6                        # one class, hyperthre
 
 def machine(ram: int) -> Machine:
     """A machine of a given size. Nothing here depends on its card."""
-    return Machine(card=Card("test", Mib(16303)), ram=Mib(ram), cores=DESKTOP)
+    return Machine(cards=installed(Card("test", Mib(16303))), ram=Mib(ram), cores=DESKTOP)
 
 
 THIS_ONE = machine(65407)
@@ -152,19 +153,20 @@ class TheCardIsReadOffTheLineNvidiaSmiPrints(unittest.TestCase):
     def test_the_three_fields_are_told_apart(self):
         given = parse_occupancy(self.LINE)
 
-        self.assertEqual("NVIDIA GeForce RTX 5070 Ti", given.card.name)
-        self.assertEqual(Mib(16303), given.card.total)
-        self.assertEqual(Mib(13501), given.free)
+        self.assertEqual("NVIDIA GeForce RTX 5070 Ti", given.first.card.name)
+        self.assertEqual(Mib(16303), given.first.card.total)
+        self.assertEqual(Mib(13501), given.first.free)
 
     def test_a_name_with_a_comma_in_it_does_not_become_a_number(self):
         """Not the whole line split on commas: a card is named, not counted."""
         with self.assertRaises(UnreadableDevice):
             parse_occupancy("16303, 13501, Some, Card\n")
 
-    def test_the_first_card_is_the_one_placed_on(self):
+    def test_every_card_is_read_in_the_order_printed(self):
         two = self.LINE + "8192, 8000, NVIDIA GeForce GTX 1080\n"
 
-        self.assertEqual(Mib(16303), parse_occupancy(two).card.total)
+        self.assertEqual([Mib(16303), Mib(8192)],
+                         [one.card.total for one in parse_occupancy(two)])
 
     def test_a_driver_that_says_nothing_useful_is_refused(self):
         for text in ("", "\n", "no devices were found\n",
@@ -182,10 +184,44 @@ class TheCardIsReadOffTheLineNvidiaSmiPrints(unittest.TestCase):
         self.assertIn("driver not loaded", str(refusal.exception))
 
 
+class WeightsOffTheCardGetWhatTheSystemAndTheCacheLeave(unittest.TestCase):
+    """A mixture is placed by moving experts into system memory, and the room for them
+    is what the machine has once the system and a declared cache have had theirs."""
+
+    def test_a_fitted_cache_asks_for_none_of_it(self):
+        """It is what is left after the weights, so it does not bound them in turn."""
+        self.assertEqual(THIS_ONE.ram - SYSTEM_SHARE, off_card(Fitted(), THIS_ONE))
+
+    def test_a_size_written_down_comes_out_of_it(self):
+        self.assertEqual(THIS_ONE.ram - SYSTEM_SHARE - Mib(32768),
+                         off_card(Fixed(Mib(32768)), THIS_ONE))
+
+    def test_a_percentage_comes_out_of_it_as_the_cache_reads_it(self):
+        asked = system_memory(Share(50), THIS_ONE, Mib(0)).cache
+
+        self.assertEqual(THIS_ONE.ram - SYSTEM_SHARE - asked,
+                         off_card(Share(50), THIS_ONE))
+
+    def test_a_cache_larger_than_the_machine_leaves_no_room_rather_than_less(self):
+        for ram in SIZES:
+            with self.subTest(ram=ram):
+                self.assertEqual(Mib(0), off_card(Fixed(Mib(ram)), machine(ram)))
+
+    def test_the_room_the_cache_and_the_system_are_the_whole_machine(self):
+        """Nothing of a machine that has room for all three is left unaccounted for."""
+        for ram in SIZES:
+            asked = Mib(ram // 4)
+            if ram < asked + SYSTEM_SHARE:
+                continue
+            with self.subTest(ram=ram):
+                room = off_card(Fixed(asked), machine(ram))
+
+                self.assertEqual(Mib(ram), room + asked + SYSTEM_SHARE)
+
 class AMachineHasCores(unittest.TestCase):
     def test_one_without_them_cannot_be_built(self):
         with self.assertRaises(ValueError):
-            Machine(card=Card("test", Mib(16303)), ram=Mib(65407), cores=())
+            Machine(cards=installed(Card("test", Mib(16303))), ram=Mib(65407), cores=())
 
 
 if __name__ == "__main__":

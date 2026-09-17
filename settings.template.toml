@@ -8,10 +8,11 @@
 #
 # Everything below is either a place on this machine or a judgement about the work.
 # Nothing here is a placement: ctx-size, cache-type-k, cache-type-v, gpu-layers,
-# n-cpu-moe, the spec-* keys, threads and cache-ram are worked out against this card and
-# written into the preset. Writing one into a model's settings is refused rather than
-# obeyed -- a placement silently overridden is the failure this program exists to
-# prevent.
+# n-cpu-moe, the spec-* keys, threads and cache-ram are worked out against this machine
+# and written into the preset, and so are the cards a profile runs across and the
+# micro-batch it runs at: device, split-mode, tensor-split, ubatch-size, rpc and
+# override-tensor. Writing one into a model's settings is refused rather than obeyed --
+# a placement silently overridden is the failure this program exists to prevent.
 
 # Where the models are: the directory the files below sit under. Left commented out,
 # the machine's LM Studio library is used instead -- LM Studio records the folder it
@@ -57,11 +58,24 @@ preset_path = 'llamacpp.models.ini'
 #   50%                       a share of the memory installed
 # cache_ram = '50%'
 
-# Video memory in MiB to leave for everything that is not a model. A target to land near,
-# not a threshold to clear: one step of the mixture-of-experts lever is some 400 MiB, so
-# a placement lands where the lever allows rather than on the line. Landing a little
-# under is no worse than landing a little over.
+# Video memory in MiB to leave for everything that is not a model, on a machine with one
+# card. The whole of what the card is left: what the driver holds for itself is inside
+# this figure rather than taken off beside it. A target to land near, not a threshold to
+# clear: one step of the mixture-of-experts lever is some 400 MiB, so a placement lands
+# where the lever allows rather than on the line, and landing a little under is no worse
+# than landing a little over.
 reserve_mib = 1024
+
+# The same where the machine has several cards, on each card a desktop draws on, in
+# every profile that card is part of: one of them is worked at while the others serve,
+# and a desktop wants room. Which card that is is read from Windows' own counters, as
+# the card its compositor holds memory on, so a remote session changes nothing.
+# reserve_multi_gpu_mib = 2048
+
+# The same on each card no desktop draws on: nobody works at such a card, so all it is
+# left is what the card keeps from everybody -- what the driver holds whatever runs, and
+# room for what no estimate foresees. This is what moving the monitors off a card buys.
+# reserve_no_desktop_mib = 768
 
 # Shortest window worth writing out, in tokens. Below some such length a profile stops
 # being useful, but where exactly is a judgement about the work rather than a fact about
@@ -74,8 +88,31 @@ min_ctx_tokens = 25000
 # tokens. A coarser cache is precision given up to buy window, so it earns a profile of
 # its own only where the precise one leaves the window short. Once the window is this
 # long there is nothing left to buy, and a second profile at the same length holding the
-# conversation less exactly is not a choice worth offering.
+# conversation less exactly is not a choice worth offering. A coarser cache is only ever
+# offered on a card alone: a profile across several cards is precise however short its
+# window, since another card is what buys it window.
 ample_ctx_tokens = 100000
+
+
+# ---------------------------------------------------------------------------- slave
+#
+# Another machine lending its card over the network. calibrate places every model across
+# that card and this machine's own as well, and writes such a profile beside the others
+# wherever its window is longer. install master writes this table and --remove takes it
+# out, so there is no need to edit it here:
+#
+#   python -m cm.install master <that machine> 12G
+#
+# address is where its worker listens: a host, or host:port where the port is not
+# 50052. memory is its card's memory in gibibytes, as install slave printed it there --
+# nothing on this machine can read a card on another one. reserve_mib is everything that
+# machine keeps on its card, in one figure. A slave that does not answer when calibrate
+# runs is left out of that run, with a line saying so.
+#
+# [slave]
+# address     = 'laptop:50052'
+# memory      = '12G'
+# reserve_mib = 2048
 
 
 # --------------------------------------------------------------------------- shared
@@ -86,7 +123,9 @@ ample_ctx_tokens = 100000
 
 [shared]
 
-# Single card, no splitting.
+# Single card, no splitting, for a model with no profile of its own. Where the machine has
+# several cards, calibrate writes into every profile which cards it runs across and how
+# its layers split between them.
 main-gpu   = 0
 split-mode = 'none'
 

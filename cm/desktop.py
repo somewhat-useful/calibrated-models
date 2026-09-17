@@ -36,6 +36,7 @@ by identity:
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from fractions import Fraction
 
 from .advise import Closing, Holder, OnScreen, OutOfSight, Pid
 from .machine import Occupancy
@@ -73,6 +74,34 @@ COMPOSITOR = "dwm.exe"
 # The router. Named rather than recognised by shape, because what singles it out is not
 # anything Windows can see: it is the one process this program exists to make room for.
 ROUTER = "llama-server.exe"
+
+
+# What a card has to hold of the compositor's memory to be one a desktop is drawn on,
+# as a share of what the card holding the most of it holds. The compositor holds memory
+# on a card it draws no desktop on as well: a window rendered there and composed onto a
+# screen elsewhere is copied across, and the copy is credited to the compositor. Those
+# copies are a fraction of a desktop -- measured on this machine, 192 MiB against 2490
+# on the card the monitors were plugged into -- while two cards each driving screens
+# hold the same order of it, in proportion to the screens.
+DESKTOP_SHARE = Fraction(1, 4)
+
+
+def desktops(held: Sequence[Mib]) -> tuple[bool, ...]:
+    """Which of these cards a desktop is drawn on, from what the compositor holds on each.
+
+    The compositor draws the desktop, so it holds the most where the desktop is, and
+    that card is one. So is any card holding within DESKTOP_SHARE of it: monitors on two
+    cards are two desktops, and both want room to work at.
+
+    Nothing is asked about monitors: a remote session detaches this machine's, and the
+    desktop goes on costing the card what it costs. A machine nobody is logged in to has
+    no compositor holding anything anywhere, and no card a desktop is drawn on.
+    """
+    most = max(held, default=Mib(0))
+    if most <= 0:
+        return tuple(False for _ in held)
+
+    return tuple(one >= most * DESKTOP_SHARE for one in held)
 
 
 def available(free: Mib, running: Sequence[Running]) -> Mib:

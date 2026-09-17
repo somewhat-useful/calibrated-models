@@ -14,17 +14,19 @@ from cm.config import (DEFAULT_CUDA, DEFAULT_KEPT, DEFAULT_RUNTIME, Config,
                        ConfigError, Model)
 from cm.machine import Card, Core, Fitted, Machine, system_memory, threads
 from cm.name import names
+from cm.nonempty import NonEmpty
 from cm.place import CacheType, ExpertsOnCpu, Settings, WholeCard
 from cm.render import REQUIRED, Placed, preset
 from cm.serving import (DEFAULT_HOST, DEFAULT_IDLE, DEFAULT_PORT,
                         DEFAULT_RESIDENT, Serving)
 from cm.units import Layers, Mib, Tokens
+from one_card import LAYOUT, installed
 from places import somewhere
 
 MODELS = somewhere("models")
 LLAMACPP = somewhere("llama.cpp")
 
-MACHINE = Machine(card=Card("NVIDIA GeForce RTX 5070 Ti", Mib(16303)),
+MACHINE = Machine(cards=installed(Card("NVIDIA GeForce RTX 5070 Ti", Mib(16303))),
                   ram=Mib(65407),
                   cores=tuple([Core(1, 2)] * 8 + [Core(0, 1)] * 8))
 
@@ -68,7 +70,8 @@ def settings(ctx, cache=CacheType.Q8_0, head=False, placement=None,
                     cache=cache,
                     head=head,
                     placement=placement or WholeCard(),
-                    spare=Mib(spare))
+                    spare=NonEmpty(Mib(spare)),
+                    layout=LAYOUT)
 
 
 def placed(key, *chosen, vendor=None, resident=0) -> Placed:
@@ -293,6 +296,54 @@ class TheMachineAndThePersonBothSpeak(unittest.TestCase):
             with self.subTest(section=name):
                 self.assertEqual("1.0", parsed[name]["temp"])
                 self.assertEqual("20", parsed[name]["top-k"])
+
+
+
+class EachModelIsLeftTheCacheItsOwnWeightsDoNotTake(unittest.TestCase):
+    """The router holds one model at a time, so the room for cached prompts is what
+    that model leaves -- not what the heaviest model in the file leaves."""
+
+    HEAVY = placed("ornith-1.5-35b",
+                   settings(131000, placement=ExpertsOnCpu(Layers(15))),
+                   resident=45440)
+
+    def test_a_section_is_given_what_is_left_after_its_own_model(self):
+        _, parsed = read(preset(config(), MACHINE, MEMORY, (DENSE, self.HEAVY)))
+
+        expected = system_memory(Fitted(), MACHINE, Mib(45440)).cache
+
+        self.assertEqual(str(expected), parsed["ornith-1.5-35b"]["cache-ram"])
+
+    def test_a_model_holding_nothing_keeps_the_whole_cache(self):
+        _, parsed = read(preset(config(), MACHINE, MEMORY, (DENSE, self.HEAVY)))
+
+        whole = system_memory(Fitted(), MACHINE, Mib(0)).cache
+
+        self.assertEqual(str(whole), parsed["qwen3.8-45k-q8"]["cache-ram"])
+        self.assertGreater(int(parsed["qwen3.8-45k-q8"]["cache-ram"]),
+                           int(parsed["ornith-1.5-35b"]["cache-ram"]))
+
+    def test_every_profile_of_one_model_is_given_the_same_room(self):
+        _, parsed = read(preset(config(), MACHINE, MEMORY, (DENSE,)))
+
+        given = {parsed[name]["cache-ram"] for name in parsed.sections()
+                 if name != "*"}
+
+        self.assertEqual(1, len(given))
+
+    def test_a_size_written_into_the_shared_block_stands_for_every_model(self):
+        """It is a judgement about the machine, and a section undoing it would leave
+        the person's own number showing in [*] and overruled everywhere it matters."""
+        given = config(shared={"cache-ram": 8192})
+
+        _, parsed = read(preset(given, MACHINE, MEMORY, (DENSE, self.HEAVY)))
+
+        self.assertEqual("8192", parsed["*"]["cache-ram"])
+        for name in parsed.sections():
+            if name == "*":
+                continue
+            with self.subTest(section=name):
+                self.assertNotIn("cache-ram", parsed[name])
 
 
 class EverySectionSaysWhatItWillHold(unittest.TestCase):

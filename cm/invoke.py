@@ -11,7 +11,9 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from .config import Runtime
-from .place import ExpertsOnCpu, Question
+from .place import (NO_TENSOR, Among, ExpertsOnCpu, Layout, Question, device_name,
+                    endpoints, micro_batch, runs_apart_by_override)
+from .rpc import written
 
 # Every layer on the card, as llama.cpp spells it.
 ALL_LAYERS = "99"
@@ -37,14 +39,55 @@ def argv(binary: Path, model: Path, question: Question,
     """
     return (str(binary), "-m", str(model),
             "-c", str(question.ctx),
-            "-b", str(runtime.batch), "-ub", str(runtime.ubatch),
+            "-b", str(runtime.batch),
+            "-ub", str(micro_batch(runtime.ubatch, question.layout.halvings)),
             "-ctk", question.cache.value, "-ctv", question.cache.value,
             "-fa", runtime.flash_attn,
             "-np", str(runtime.parallel),
-            "--split-mode", "none",
+            *_split(question.layout),
             "--fit", "off", "--fit-print", "on",
             *_placement(question),
             )
+
+
+def _split(layout: Layout) -> Sequence[str]:
+    """Which devices the layers go across.
+
+    A machine's only card is told there is no splitting and nothing else, which is all a
+    machine with one card has ever been told. One card of several is named as well: left
+    unnamed, llama.cpp takes the first card it counts. Several are named in the order the
+    layers run through them, each with the count of layers it holds.
+    """
+    if len(layout.devices) > 1:
+        return (*_workers(layout),
+                "--split-mode", "layer",
+                "--device", ",".join(device_name(one) for one in layout.devices),
+                "--tensor-split", ",".join(str(count) for count in layout.layers),
+                *_apart(layout))
+
+    match layout.among:
+        case Among.ONE:
+            return ("--split-mode", "none")
+        case Among.SEVERAL:
+            return ("--split-mode", "none", "--device", device_name(layout.devices.first))
+
+
+def _workers(layout: Layout) -> Sequence[str]:
+    """The workers the chain reaches, for llama.cpp to connect to before it counts its
+    devices: a slave's card is not one of them until then."""
+    reached = endpoints(layout)
+    if not reached:
+        return ()
+    return ("--rpc", ",".join(written(one) for one in reached))
+
+
+def _apart(layout: Layout) -> Sequence[str]:
+    """An override that moves nothing, where cards that would run pieces of a prompt at
+    once by themselves are to be kept apart: any override at all is what turns that
+    off."""
+    if runs_apart_by_override(layout):
+        return ("-ot", f"{NO_TENSOR}={device_name(layout.devices.first)}")
+    return ()
 
 
 def _placement(question: Question) -> Sequence[str]:

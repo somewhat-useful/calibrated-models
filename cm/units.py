@@ -11,6 +11,11 @@ Mib = NewType("Mib", int)
 Tokens = NewType("Tokens", int)
 Layers = NewType("Layers", int)
 
+# How many times the micro-batch is halved from what the settings file runs with. A
+# count of halvings rather than a size, so that the size a placement was asked at always
+# follows from the file and cannot drift from it.
+Halvings = NewType("Halvings", int)
+
 # What a file is measured in where the measuring is somebody else's: a release states
 # the size of its archives in bytes, and a finished download is compared with it.
 Bytes = NewType("Bytes", int)

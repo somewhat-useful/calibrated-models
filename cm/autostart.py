@@ -114,7 +114,7 @@ def _register(given: argparse.Namespace) -> None:
     files.ensure(serving.logs((settings.parent / read.serving.logs).resolve())
                  .router.parent)
 
-    _handed(document)
+    register(document, NAME)
 
     print(f"Registered the scheduled task '{NAME}'")
     print(f"Runs as:    {session.account()} (S4U, no password stored)")
@@ -144,13 +144,13 @@ def _remove() -> None:
           "running: python -m cm.router stop.")
 
 
-def _handed(document: str) -> None:
+def register(document: str, name: str) -> None:
     """The document, given to the scheduler through a file, which is how it takes one."""
-    written = Path(tempfile.gettempdir()) / f"{NAME}.xml"
+    written = Path(tempfile.gettempdir()) / f"{name}.xml"
 
     try:
         files.write_utf16(written, document)
-        proc.asked(("schtasks", "/Create", "/TN", NAME, "/XML", str(written), "/F"),
+        proc.asked(("schtasks", "/Create", "/TN", name, "/XML", str(written), "/F"),
                    "register the task")
     finally:
         files.delete(written)

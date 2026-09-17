@@ -9,11 +9,12 @@ is asked of the core, over a range of cards, rather than of a list chosen by han
 import unittest
 
 from cm import name, place
-from cm.estimate import Needs
 from cm.facts import Head, ModelFacts, NoHead
 from cm.name import names
+from cm.nonempty import NonEmpty
 from cm.place import CacheType, ExpertsOnCpu, Settings, WholeCard
 from cm.units import Layers, Mib, Tokens
+from one_card import LAYOUT, UBATCH, chains, needs
 
 RESERVE = Mib(1024)
 MIN_CTX = Tokens(25000)
@@ -33,12 +34,12 @@ def law(question):
     needed = 8000 + 0.06 * question.ctx * share
     if isinstance(question.placement, ExpertsOnCpu):
         needed -= 150 * question.placement.layers
-    return Needs(card=Mib(round(needed)), host=Mib(0))
+    return needs(Mib(round(needed)), Mib(0))
 
 
 def run(facts, card):
     """Drive the core the way cli.py will, and hand back what it settled on."""
-    limits = place.limits_for(card, RESERVE, MIN_CTX, AMPLE_CTX)
+    limits = place.limits_for(chains(card, RESERVE), UBATCH, MIN_CTX, AMPLE_CTX)
     answers = {}
 
     for _ in range(40):
@@ -55,7 +56,7 @@ def run(facts, card):
 
 def profile(ctx, cache=CacheType.Q8_0, head=False):
     return Settings(ctx=Tokens(ctx), cache=cache, head=head,
-                    placement=WholeCard(), spare=Mib(1024))
+                    placement=WholeCard(), spare=NonEmpty(Mib(1024)), layout=LAYOUT)
 
 
 EVERY_SHAPE = tuple(profile(ctx, cache, head)

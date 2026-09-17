@@ -1,4 +1,5 @@
-"""calibrate: work out where each model in the settings file sits on this card.
+"""calibrate: work out where each model in the settings file sits on this machine's
+cards.
 
 The loop is here and it decides nothing. The core says which configuration to ask the
 estimator about, this asks, and the core decides once the answers are in. Every number
@@ -7,17 +8,17 @@ that ends up in the preset was computed against the card in this machine.
 
 import argparse
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
-from . import (devices, files, invoke, place, proc, reading, releases, render,
-               report, workspace)
-from .config import Config, ConfigError, Model
-from .estimate import parse_requirement
+from . import (devices, files, invoke, place, proc, reach, reading, releases, render,
+               report, weights, workspace)
+from .config import Config, ConfigError, Model, NoSlave
+from .estimate import Requirement, parse_requirement
 from .facts import parse_facts
-from .machine import UnreadableDevice, system_memory
+from .machine import Machine, UnreadableDevice, off_card, system_memory
 from .name import names
-from .place import Limits
+from .place import Limits, Local, Question, Remote, Reserves, Settings, Worker
 from .render import Placed
 from .units import Mib
 
@@ -41,8 +42,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 def _arguments(argv: Sequence[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="calibrate",
-        description="Place every model in the settings file on this machine's card "
-                    "and write the router's preset file.")
+        description="Place every model in the settings file on this machine's "
+                    "cards, and on a slave's card where one is named and "
+                    "answers, and write the router's preset file.")
     parser.add_argument("--settings", type=Path, default=reading.DEFAULT,
                         help="the settings file to read")
     return parser.parse_args(list(argv))
@@ -56,18 +58,36 @@ def _calibrate(settings: Path) -> None:
         raise ConfigError(_names_nothing(settings, read))
 
     estimator = _estimator(workspace.engines())
-    machine = devices.probe()
-    limits = place.limits_for(machine.card.total, read.reserve,
-                              read.min_ctx, read.ample_ctx)
 
-    print(report.opening(machine.card, limits.available, limits.reserve))
+    machine = devices.probe()
+    reserves = Reserves(alone=read.reserve, with_others=read.reserve_multi_gpu,
+                        without_desktop=read.reserve_no_desktop)
+    chains = place.chains(machine.cards, _reachable(read.slave), reserves)
+    limits = place.limits_for(chains, read.runtime.ubatch, read.min_ctx,
+                              read.ample_ctx)
+
+    for line in _seats(machine, limits):
+        print(line)
     print()
+
+    room = off_card(read.cache_ram, machine)
 
     placed = []
     for model in read.models:
+        if not files.exists(model.path):
+            print(report.missing(model.key, model.path))
+            continue
+
         one = _place(estimator, read, model, limits)
+        if one.resident > room:
+            print(report.too_much(model.key, one.resident, room))
+            continue
+
         placed.append(one)
         print("\n".join(report.about(one)))
+
+    if not placed:
+        raise ConfigError(_nothing_is_there(settings, read))
 
     memory = system_memory(read.cache_ram, machine,
                            Mib(max((one.resident for one in placed), default=0)))
@@ -90,6 +110,53 @@ def _names_nothing(settings: Path, read: Config) -> str:
             "Write an entry for everything in the library: python -m cm.scan")
 
 
+def _nothing_is_there(settings: Path, read: Config) -> str:
+    """Every model named, and not one file where its entry says.
+
+    The preset is left as it was rather than written empty: a router with nothing to
+    serve is not what a library gone missing means, and the run says so instead.
+    """
+    return (f"Not one of the {len(read.models)} model(s) {settings.name} names has its "
+            f"file under {read.model_root}, so there is nothing to place and the preset "
+            "is left as it was.")
+
+
+def _reachable(slave: NoSlave | Worker) -> tuple[Worker, ...]:
+    """The slave, where one is named and its worker answers.
+
+    One that does not answer is said out loud and left out: the estimator cannot ask
+    about a card it cannot reach, and the machine's own cards are placed regardless.
+    """
+    match slave:
+        case NoSlave():
+            return ()
+        case Worker() as worker if reach.reachable(worker.endpoint):
+            return (worker,)
+        case Worker() as worker:
+            print(report.unreachable(worker.endpoint))
+            print()
+            return ()
+
+
+def _seats(machine: Machine, limits: Limits) -> tuple[str, ...]:
+    """Every chain the placements are computed against, a device a line and the chains
+    apart."""
+    cards = {one.index: one.card for one in machine.cards}
+
+    lines = []
+    for chain in limits.chains:
+        if lines:
+            lines.append("")
+        for seat in chain:
+            match seat.device:
+                case Local(index, _):
+                    lines.append(report.opening(cards[index], seat.reserve))
+                case Remote(endpoint, _):
+                    lines.append(report.remote(endpoint, seat.available, seat.reserve))
+
+    return tuple(lines)
+
+
 def _estimator(engines: Path) -> Path:
     """The newest unpacked release that carries the estimator."""
     for release in releases.releases(files.directories(engines)):
@@ -103,9 +170,6 @@ def _estimator(engines: Path) -> Path:
 
 def _place(estimator: Path, read: Config, model: Model, limits: Limits) -> Placed:
     """One model, asked about until the core stops asking."""
-    if not files.exists(model.path):
-        raise ConfigError(f"{model.key}: file not found: {model.path}")
-
     facts = parse_facts(proc.run(invoke.facts_argv(estimator, model.path)).err)
 
     answers = {}
@@ -115,7 +179,22 @@ def _place(estimator: Path, read: Config, model: Model, limits: Limits) -> Place
             answers[question] = parse_requirement(proc.run(argv).out)
 
     chosen = place.settings(facts, model.allowed, limits, answers)
-    return Placed(model, names(model.key, chosen), place.resident(chosen, answers))
+    return Placed(model, names(model.key, chosen), _resident(read, model, chosen, answers))
+
+
+def _resident(read: Config, model: Model, chosen: Sequence[Settings],
+              answers: Mapping[Question, Requirement]) -> Mib:
+    """What a model keeps in system memory, less what is never held there.
+
+    The estimator counts a tensor llama.cpp reads row by row as memory like any other,
+    so its answer is too big by exactly those tensors -- unless the settings file has
+    asked for them to be held after all, which is the one case the file wins.
+    """
+    held = place.resident(chosen, answers)
+    if read.shared.get("lazy-mode") == weights.HELD:
+        return held
+
+    return Mib(max(0, held - weights.on_demand(model.path)))
 
 
 if __name__ == "__main__":

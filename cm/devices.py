@@ -10,12 +10,14 @@ import ctypes
 import struct
 import sys
 from ctypes import wintypes
+from collections.abc import Sequence
 from pathlib import Path
 
-from . import lmstudio
+from . import desktop, lmstudio, session
 from .lmstudio import Found, Library, Missing
-from .machine import (Core, Machine, Occupancy, UnreadableDevice,
-                      parse_occupancy)
+from .machine import (CARD_FIELDS, Attached, Core, CudaIndex, Installed, Machine,
+                      Occupancy, UnreadableDevice, parse_cards, parse_occupancy)
+from .nonempty import NonEmpty
 from .proc import run
 from .units import Mib
 
@@ -34,12 +36,12 @@ _GROUP_SIZE = 16
 
 
 def probe() -> Machine:
-    """This machine: its card, its memory, and its cores."""
+    """This machine: its cards, its memory, and its cores."""
     if sys.platform != "win32":
         raise UnreadableDevice(
             f"reading this machine is implemented for Windows only, not {sys.platform}")
 
-    return Machine(card=occupancy().card, ram=_ram(), cores=_cores())
+    return Machine(cards=cards(), ram=_ram(), cores=_cores())
 
 
 def library() -> Library:
@@ -68,14 +70,51 @@ def _text(path: Path) -> str:
         return ""
 
 
-def occupancy() -> Occupancy:
-    """The card and how much of it is free at this moment."""
-    done = run(("nvidia-smi", "--query-gpu=memory.total,memory.free,name",
+def cards() -> NonEmpty[Installed]:
+    """Every card in this machine, as a placement needs to know it.
+
+    Two readings. The card itself comes from nvidia-smi; whether a desktop draws on it
+    comes from Windows' own counters, which say where the compositor holds memory. The
+    monitors are nobody's answer to that: a remote session detaches them, and the driver
+    then reports none on any card while the desktop holds what it held.
+    """
+    done = run(("nvidia-smi", f"--query-gpu={CARD_FIELDS}",
                 "--format=csv,noheader,nounits"))
     if not done.out.strip():
         raise UnreadableDevice(f"nvidia-smi said nothing: {done.err.strip()!r}")
 
-    return parse_occupancy(done.out)
+    attached = parse_cards(done.out)
+    first, *rest = (Installed(index=one.index, card=one.card, capability=one.capability,
+                              draws_desktop=drawn, address=one.address)
+                    for one, drawn in zip(attached, _desktops(attached)))
+    return NonEmpty(first, *rest)
+
+
+def _desktops(attached: Sequence[Attached]) -> tuple[bool, ...]:
+    """Which of these cards a desktop is drawn on.
+
+    Every card at once, because the counters name every adapter in one reading and what
+    counts as a desktop is a card's share of them. A card Windows lists no display
+    adapter for draws no desktop: a desktop is drawn with an adapter, and it has none.
+    """
+    adapters = tuple(session.adapter(one.address) for one in attached)
+    known = tuple(one for one in adapters if isinstance(one, session.Adapter))
+    if not known:
+        return tuple(False for _ in adapters)
+
+    drawn = dict(zip(known, desktop.desktops(session.held_by(desktop.COMPOSITOR, known))))
+    return tuple(drawn.get(one, False) for one in adapters)
+
+
+def occupancy(index: CudaIndex) -> Occupancy:
+    """One card, and how much of it is free at this moment."""
+    done = run(("nvidia-smi", f"--id={index}",
+                "--query-gpu=memory.total,memory.free,name",
+                "--format=csv,noheader,nounits"))
+    if not done.out.strip():
+        raise UnreadableDevice(f"nvidia-smi said nothing: {done.err.strip()!r}")
+
+    return parse_occupancy(done.out).first
 
 
 def _ram() -> Mib:

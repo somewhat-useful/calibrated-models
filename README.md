@@ -1,7 +1,8 @@
 # calibrated-models
 
-An OpenAI-compatible endpoint for local GGUF models on one NVIDIA card, sized to the
-machine it runs on.
+An OpenAI-compatible endpoint for local GGUF models on the NVIDIA cards of one machine,
+and on a card another machine lends it over the network, sized to the machines they
+are in.
 
 The machine with the card runs one `llama-server` process — the **router**. It starts
 with no model loaded; a request naming a model in its `model` field makes the router load
@@ -12,20 +13,21 @@ switching costs a load.
 *Calibrated* is the point. How long a window a model can hold, how many of its experts
 stay in system memory, how many threads it runs, how much memory the prompt cache may
 have — none of that is a constant taken from somebody else's machine. It is worked out
-against this card, this processor and this much memory, every time you run `calibrate`.
+against these cards, this processor and this much memory, every time you run
+`calibrate`.
 
 Nothing about a machine is in this repository. What it holds is a settings template, and
 programs that read the machine.
 
 ---
 
-## Ten commands
+## Thirteen commands
 
 | run it as | on which machine | what it does |
 |---|---|---|
-| `python -m cm` | either | Prints the ten below in the order they are run, so that which one comes next is not something to open this file for |
+| `python -m cm` | either | Prints the thirteen below in the order they are run, so that which one comes next is not something to open this file for |
 | `python -m cm.install llamacpp` | the one with the card | Installs the newest llama.cpp release published for this machine's CUDA version, and removes the ones past keeping |
-| `python -m cm.scan` | the one with the card | Adds an entry to the settings file for every model in the library that has none yet, named after the file, and brings every entry's sampler values up to date with `recommended.toml` in this repository. An entry marked `manual = true` is left alone; nothing is ever removed |
+| `python -m cm.scan` | the one with the card | Adds an entry to the settings file for every model in the library that has none yet, named after the file, and brings every entry's sampler values up to date with `recommended.toml` in this repository. An entry marked `manual = true` is left alone; an entry whose file is gone is taken out, whatever else it says. `--force` also keys every entry the way the library names its file |
 | `python -m cm.models` | the one with the card | The models the settings file names: whether the file is in the library, which repository it came from, and the commit that repository is at now. Downloads nothing |
 | `python -m cm.calibrate` | the one with the card | Works out where each model in the settings file sits on this card, and writes `llamacpp.models.ini` — the preset the router reads. Loads nothing; it asks the estimator, which reads GGUF headers, so it takes seconds |
 | `python -m cm.router start` | the one with the card | Runs the server of the newest release unpacked here, on the preset `calibrate` wrote, and reports what it serves. `stop` ends the server that is holding the configured port |
@@ -34,13 +36,18 @@ programs that read the machine.
 | `python -m cm.vram` | the one with the card | What the router can load right now, and what to close so it can load the rest. A screen that keeps reading while you close things |
 | `python -m cm.install pi` | any machine that calls it | Installs the pi agent and the context-policy extension, or brings both up to date |
 | `python -m cm.pi <host>` | any machine that calls it | Points the pi agent at the router and rewrites its model list from what the router actually serves |
+| `python -m cm.install slave` | a machine lending its card | Installs llama.cpp there, registers the scheduled task that starts its RPC worker at boot, and admits the local subnet to the worker's port, then prints what to type on the machine with the router. Needs an elevated session; stores no password |
+| `python -m cm.slave start` | a machine lending its card | Starts the worker by hand, lending the card with the most memory. `stop` ends the worker holding its port |
+| `python -m cm.install master <host> <memory>` | the one with the router | Names the slave in the settings file — where its worker listens and how much memory its card has — and says whether it answers. `calibrate` then places models across that card too |
 
 They share no state of their own. `scan` writes the entries `calibrate` places,
 `calibrate` writes a file `router` hands to the
 server, `install llamacpp` unpacks the releases both of them run, `autostart` and
 `firewall` make the router something the network can reach without anybody logging in,
 `install pi` puts the agent on the machine that calls, and `pi` asks the router over
-HTTP and copies nothing from the machine with the card.
+HTTP and copies nothing from the machine with the card. `install master` writes the one
+table `calibrate` reads about a slave, and the slave is told nothing about the router at
+all: whatever connects to its worker is served.
 
 ## What runs where
 
@@ -52,11 +59,18 @@ than guessing.
 
 `router`, `autostart` and `firewall` read no card, but they belong to that machine all
 the same: `router` starts and stops Windows processes, `autostart` hands a task to the
-Windows scheduler, and `firewall` asks netsh what the machine admits. The last two are
-the only ones that need an elevated session, and where they do not have one they ask
-Windows for it rather than half-doing the work.
+Windows scheduler, and `firewall` asks netsh what the machine admits. The last two need
+an elevated session, and where they do not have one they ask Windows for it rather than
+half-doing the work.
 
-`install`, `models` and `pi` have none of that. One runs npm and pi, one looks in the
+`install slave` and `slave` belong to a machine lending its card, and to Windows for the
+same reasons: they read its card through `nvidia-smi`, hand its worker to the
+scheduler, ask netsh to admit the worker's port, and start and stop Windows processes.
+`install slave` needs an elevated session too, and asks for it the same way.
+`install master` reads no card and needs no rights: it writes the settings file on the
+router's machine and knocks once on the slave's port.
+
+`install pi`, `models` and `pi` have none of that. One runs npm and pi, one looks in the
 library and asks Hugging Face what its repositories hold, and one speaks HTTP to the
 router and writes two JSON files. All three run on **Windows, macOS and Linux** alike —
 which is the shape of the thing: one machine holds the card, any number of machines call
@@ -73,6 +87,9 @@ so it is not something to arrange first.
 
 On a machine that calls it: npm, if you want `install pi` to put pi there. Any other
 OpenAI-compatible client works with no script at all.
+
+On a machine lending its card: an NVIDIA driver with `nvidia-smi` on the path, and a
+copy of this repository to run `install slave` from, which puts llama.cpp there.
 
 Nothing here is installed. The programs run from the directory this repository is in,
 and that directory is the whole of it: the llama.cpp releases go into `.llamacpp` inside
@@ -123,6 +140,16 @@ The rest of what they take, in full:
 | | `--provider` | what to call the provider in pi's file, where none points at this router yet. `llamacpp-cuda` |
 | | `--backups` | how many dated copies of pi's files to keep. Ten |
 | | `--preview` | print what would be written, and write nothing |
+| `install slave` | `--port` | the port the worker listens on. 50052 |
+| | `--print-command` | print what would be registered, down to the task XML, and change nothing |
+| | `--remove` | stop starting the worker at boot and close its port, leaving llama.cpp installed |
+| `slave start` | `--port` | as above |
+| | `--print-command` | print what would be run, and start nothing |
+| | `--foreground` | run the worker in this console instead of detaching — which is how the scheduled task runs it |
+| `slave stop` | `--port` | as above |
+| `install master` | `--port` | the worker's port, unless the address already carries one. 50052 |
+| | `--reserve` | MiB to leave on the slave's card for its own machine. 2048 |
+| | `--remove` | take the slave out of the settings file |
 
 `scan`, `models`, `calibrate`, `vram` and `router stop` take `--settings` and `--help`
 and nothing else: there is nothing in them to vary.
@@ -139,9 +166,9 @@ which is the one thing `--help` on any single command cannot tell you.
 repository need installing -- clone or unpack it anywhere and run the programs from that
 directory, which is where everything they make will be.
 
-The whole path is nine commands, and the rest of this section is what each one does.
-`python -m cm` prints this list in the console, so it is not something to come back here
-for:
+The whole path is nine commands, and two more where another machine lends its card; the
+rest of this section is what each one does. `python -m cm` prints this list in the
+console, so it is not something to come back here for:
 
 ```bash
 python -m cm.install llamacpp         # 1. the settings file, and llama.cpp
@@ -153,6 +180,8 @@ python -m cm.autostart                # 4. and at every boot        (elevated)
 python -m cm.firewall                 #    and from the local network (elevated)
 python -m cm.install pi               # 5. on whatever machine calls it
 python -m cm.pi <the machine with the card>
+python -m cm.install slave            # 6. on a machine lending its card (elevated)
+python -m cm.install master <it> 12G  #    here, naming it; then calibrate again
 ```
 
 **1. The settings file, and llama.cpp.**
@@ -230,6 +259,25 @@ is `qwen3.8-27b-q4km` rather than a coin toss. Rename it if you would rather typ
 something shorter -- an entry belongs to its `file`, not to its key, and `scan` will not
 write a second one for a file that already has an entry.
 
+A name already in the file stays, however it was arrived at, which is how a key written
+when a model was the only one of its kind outlives the day a second quantisation arrives
+beside it. `--force` is where that is given up on purpose:
+
+```bash
+python -m cm.scan --force
+```
+
+Every entry is then keyed the way the library would name its file today, so that a name
+says which file it is rather than what it happened to be called first. Only the entry's
+two headers change; the file it names, the values under it and anything written around
+them stay. An entry marked `manual = true` is not renamed either, and neither is one
+whose file sits outside the library. Every profile of a renamed model is served under a
+new name afterwards, so the preset has to be written again:
+
+```bash
+python -m cm.calibrate
+```
+
 Files that only sit beside a model are left out: `mmproj-*.gguf` is a vision projector,
 unused here and about a gibibyte of video memory to pair, and `mtp-*.gguf` is a
 prediction head, which this reads out of the model's own file instead.
@@ -275,6 +323,7 @@ What happens to an entry when `scan` runs is decided by the entry:
 | there is none for the file | one is added, with what the repository recommends |
 | there is one | its settings block is brought up to date |
 | there is one, marked `manual = true` | nothing at all |
+| there is one keyed some other way, and `--force` | it is keyed the way the library names its file |
 | there is one, and its settings are written some other way | nothing at all, and the run says which entry and why |
 
 The last is for a settings block `scan` cannot replace: one whose header carries a
@@ -290,8 +339,15 @@ anybody's recommendation — the block says which of the two it is.
 
 Everything between the settings block's header and whatever follows it belongs to
 `scan` and is rewritten, the provenance comment included. A note of your own goes above
-the header, where it survives. Nothing else in the file is touched: `scan` never removes
-an entry, never reorders one, and never edits a key other than its settings.
+the header, where it survives. Nothing else in the file is touched: `scan` never
+reorders an entry, and never edits a key other than its settings.
+
+One entry it does take out: the one naming a file that is not there. Such an entry
+names nothing, and `hidden` or `manual` makes no difference to that -- both its tables
+go and the run says which entry and where the file was, along with the note above the
+header: it was about the model named under it. An entry that cannot be cut whole -- one
+written twice, or carrying a table besides its settings -- is left alone and named
+instead.
 
 Deleting the block does not leave a model neutral. It leaves it on llama.cpp's own
 defaults -- `temp 0.8`, `top-k 40`, `min-p 0.05` -- which are nobody's recommendation
@@ -413,6 +469,22 @@ dated backup is kept. `--preview` prints what it would write and writes nothing.
 Any other OpenAI-compatible client needs no script at all: point it at
 `http://<the machine>:18081/v1`.
 
+**6. Another machine's card**, where there is one to lend. The first command on that
+machine, from a copy of this repository; the rest on this one:
+
+```bash
+python -m cm.install slave
+python -m cm.install master <that machine> 12G
+python -m cm.calibrate
+python -m cm.router start
+```
+
+The first asks for the rights it needs, installs llama.cpp there, starts its worker at
+every boot and says what to type here; the second writes that machine into the settings
+file. Then the models are placed again, and the router started on what that wrote. What
+each of them does, and what `calibrate` does with the card, is
+[below](#several-cards-and-a-card-lent-over-the-network).
+
 ---
 
 ## Afterwards
@@ -444,6 +516,11 @@ on it.
 `llama-fit-params` what fits. A build that packs its buffers differently answers
 differently, and the preset would still be holding the old answer. It costs seconds and
 loads nothing.
+
+Where another machine lends its card, run `python -m cm.install slave` there as well, and
+start its worker again with `python -m cm.slave start`. Keep the two machines on one
+release: the router and the worker talk to each other, and nothing here checks that two
+releases still agree on how.
 
 **Which models are served right now**, without any client:
 
@@ -480,6 +557,9 @@ back at the next boot.
 elevated, undo what needed elevation to do. Everything else is files, and all of them
 are in this directory: `.llamacpp`, the preset, the logs and the settings file. On a
 machine that calls, `~/.pi` if `install pi` put pi there. `npm uninstall -g @earendil-works/pi-coding-agent` removes pi itself.
+On a machine lending its card, `install slave --remove`, elevated, and `slave stop`; the
+rest there is files in that copy of this directory. On the router's machine,
+`install master --remove` takes the slave out of the settings file.
 
 ## Watching the card
 
@@ -513,6 +593,12 @@ NVIDIA GeForce RTX 4080 SUPER   16376 MiB   in use 13996   free 2380
   marked 1 program, 3480 MiB -- enough by these figures
   [tab] next model   [shift-tab] back   [space] mark   [enter] close marked   [r] refresh   [q] quit
 ```
+
+The card is the one a desktop is drawn on, since what holds any other is nothing a person
+closes a window to give back: a machine's only card, or of several the one the desktop
+draws on. Each profile's figure is what it holds on that card -- nothing, for a profile
+that does not use it -- and each program's is what it holds there. Where several cards
+draw a desktop, or none of several does, `vram` says so and stops.
 
 The first line is the card. The second is there only while the router is holding a model:
 that memory comes back the moment it is asked for a different one, so what a profile has
@@ -552,6 +638,7 @@ command that deals with it. The ones worth knowing in advance:
 | `model_root is not set and there is no LM Studio library at ...` | uncomment `model_root` and name the directory the weights are under |
 | `No release carries llama-b<number>-bin-win-cuda-<version>-x64.zip` | `cuda_version` names a flavour the project no longer builds. It prints the newest tags it saw |
 | `No llama.cpp release under ... carries llama-server.exe` | step 1 has not happened: nothing is unpacked in `.llamacpp` yet |
+| `No llama.cpp release under ... carries ggml-rpc-server.exe` | on a machine lending its card: `install slave` has not run there yet |
 | `The preset the router reads was not found: ...` | `calibrate` has not run since the settings file changed |
 | `qwen3.8: ctx-size is derived; remove it` | a placement was written into the settings file by hand. Those are measured, and one written down would be obeyed silently and wrongly |
 | `Port N is still held by process M` | either a router this session may not signal — one started by the scheduled task, under another logon session — or something that is not `llama-server.exe` and was left alone deliberately. It prints the elevated `Stop-Process` line either way |
@@ -583,16 +670,26 @@ file — and a machine serving one card has no reason to name any of them.
 
 | key | what it decides |
 |---|---|
-| `reserve_mib` | video memory to leave for everything that is not a model |
+| `reserve_mib` | video memory to leave for everything that is not a model, on a machine with one card |
+| `reserve_multi_gpu_mib` | the same where the machine has several cards, on each card a desktop draws on. 2048 |
+| `reserve_no_desktop_mib` | the same on each card none draws on, where the machine has several. 768 |
 | `min_ctx_tokens` | below which a window stops being worth serving |
-| `ample_ctx_tokens` | past which a coarser attention cache buys nothing worth having |
+| `ample_ctx_tokens` | past which a coarser attention cache buys nothing worth having on a card alone |
 | `cache_ram` | how much system memory the prompt cache may hold |
 
 `cache_ram` is written the way anyone would write it — `32`, `32G`, `32Gb`, `32GiB` for a
 size in gibibytes, `50%` for a share of the memory installed. Leave it out and it is
-worked out: what the machine has, less the weights the heaviest profile keeps off the
-card, less a share for the system. Half the memory, which is what an older version of this
-used, is not the answer on a machine whose job is serving models with nobody logged in.
+worked out for each model on its own: what the machine has, less the weights that model
+keeps off the card, less a share for the system. Written down by name, it is room the
+weights may not take either: a model is placed within what is left after it, and every
+profile is given the size as written. Half the memory, which is what an older version of
+this used, is not the answer on a machine whose job is serving models with nobody logged
+in.
+
+**The slave**, where another machine lends its card: a `[slave]` table saying where its
+worker listens, how much memory its card has and how much of it to leave.
+`install master` writes it and takes it out again — see
+[below](#several-cards-and-a-card-lent-over-the-network).
 
 **The models**: one entry per GGUF, written and kept up to date by
 [`scan`](#running-the-programs) and yours to change afterwards. Everything beyond `file`
@@ -602,11 +699,12 @@ repository, `cache` and `mtp` to narrow which profiles `calibrate` may offer,
 `manual = true` to keep `scan` out of that entry's settings for good.
 
 What may **not** be in it: `ctx-size`, `cache-type-k`, `cache-type-v`, `gpu-layers`,
-`n-cpu-moe`, the `spec-*` keys, `threads` and `cache-ram`. Those are worked out against
-this machine, and one written by hand is refused rather than obeyed — a placement quietly
-overridden is the failure this program exists to prevent, and it would not even look like
-one: the router would start, serve the model, and hold a different window than the card was
-measured for.
+`n-cpu-moe`, the `spec-*` keys, `threads`, `cache-ram`, and what says where the layers go
+and how they run: `device`, `split-mode`, `tensor-split`, `ubatch-size`, `rpc` and
+`override-tensor`. Those are worked out against this machine, and one written by hand is
+refused rather than obeyed — a placement quietly overridden is the failure this program
+exists to prevent, and it would not even look like one: the router would start, serve the
+model, and hold a different window than the card was measured for.
 
 The settings file is yours and is not in the repository. The template is.
 
@@ -614,15 +712,234 @@ The settings file is yours and is not in the repository. The template is.
 
 | what | from |
 |---|---|
-| the window each profile holds, and the attention cache it holds it at | asked of `llama-fit-params` against the card's total memory, searched until the placement lands near `reserve_mib` |
-| how many expert layers of a mixture stay in system memory | the same search, along the other lever |
+| the window each profile holds | asked of `llama-fit-params` against each card's total memory, with what it is never told about a prediction head added, searched until the placement lands near each card's reserve |
+| which cards a profile runs on | the fastest card alone first, then each card added in front of it, then a slave's card, each only where it holds a longer window than every one before |
+| the attention cache | `q8_0`, with `q4_0` beside it only on a card alone while `q8_0` holds less than `ample_ctx_tokens` there -- or instead of it, where `q8_0` does not fit a machine's only card |
+| whether a prediction head runs | both ways on a machine with one card; with a second card, always where the file carries one |
+| how many expert layers of a mixture stay in system memory | the same search, along the other lever -- and with several cards, none until every card holds layers of it |
+| how many layers each card holds, where there are several | laid out from the fastest card back, each taking layers while that brings it nearer its reserve |
+| the micro-batch a profile runs at | `ubatch-size` from `[shared]`, halved down to 128 only where the window it buys is worth the prefill it costs |
+| whether several cards run pieces of a prompt at once | yes, unless the window without it is at least 30% longer |
 | `threads` and `threads-batch` | the logical processors of the fastest cores. Not all of them: the thread pool is synchronised by a barrier, so work spread onto slow cores is work the rest wait for |
-| `cache-ram` | the memory installed, less what the heaviest placement keeps outside the card, less a share for the system |
+| `cache-ram` | per profile: the memory installed, less what that model keeps outside the card, less a share for the system. `[*]` carries the same worked out for the heaviest model, which is what one with no profile of its own is left |
 
-A placement is never narrowed to fit around a browser: what fits is worked out against the
-card's total, so it does not matter what is open while `calibrate` runs. Whether a model
+A placement is never narrowed to fit around a browser: what fits is worked out against
+each card's total, so it does not matter what is open while `calibrate` runs. Whether a model
 fits *right now* is a different question, and that is what
 [`vram`](#watching-the-card) is for.
+
+## Several cards, and a card lent over the network
+
+**Several cards in the machine** need nothing set. `calibrate` reads every card
+`nvidia-smi` lists and adds them one at a time, the fastest first. Nothing a card reports
+says how fast it is, so the latest generation stands for the fastest, and of one
+generation the card with more memory goes first; whether a desktop draws on it
+decides nothing. The fastest card alone is placed first: those are the quickest
+profiles, with the compromises one card makes. Then the next card is added in front of
+it, and a profile across both is written only where it holds a longer window than the
+fastest card alone did for the same cache and head. Every card added costs speed, so it
+has to buy window; the profiles add up, and which to load is chosen by name. A slave's
+card is the last one added.
+
+With the desktop on an 8 GiB card and a 16 GiB one beside it, `qwen3.8` gets
+`qwen3.8-25k-q8-mtp` and `qwen3.8-57k-q4-mtp` on the 16 GiB card alone and
+`qwen3.8-120k-q8-mtp` across both, while `gemma4-12b`, which holds its whole trained
+window on the 16 GiB card, gets that one profile and nothing across two.
+`ornith-1.5-35b`, a mixture the 16 GiB card alone holds only with experts in system
+memory, gets one profile across both cards, with the experts of 2 layers there.
+
+Three rules follow the cards. Where the machine has a second card, every profile runs
+the prediction head a file carries: dropping it would buy window the second card buys
+better. A coarser `q4_0` cache is offered only on a card alone, beside `q8_0` while
+`q8_0` holds less than `ample_ctx_tokens` there; a profile across several devices is
+always `q8_0`. A model whose `q8_0` does not fit on the fastest card at all gets a
+`q4_0` profile of that card only on a machine with one card -- with several, it is
+placed across the cards or not at all. And experts read from system memory are slower
+than on any card, so a mixture the fastest card cannot hold whole is not offloaded
+there: it is placed across the cards after it, and only once every card of the machine
+holds layers of it do experts stay in system memory.
+
+System memory is the other bound, the cards being one of them. What a placement leaves
+there may not be more than this machine has for weights -- what it has beyond the
+system's own share of 8 GiB, less a `cache_ram` written down by name -- because weights
+counted on but not held are read off the disk for every token, or fail to be locked
+where `load-mode` asks for them to be. A model whose heaviest profile wants more than
+that is left out of the preset, and the run says so under its name.
+
+Not everything the estimator counts there is held there. An architecture may mark a
+tensor as read row by row -- the table of per-layer embeddings is one, and on a 87 GiB
+file it is 27 of them -- and llama.cpp maps it and fetches the rows a token asks for,
+whatever `load-mode` says. The estimator counts it as memory all the same, its
+memory-fit pass allocating nothing and mapping nothing, so the model's own file is read
+here and those tensors come off what a placement is said to need. `lazy-mode = off` in
+the shared block asks llama.cpp to hold them after all, and then nothing is taken off.
+
+The cards of a profile run slowest first, the order they were added in reversed, and a
+model's layers pass through them in that order. The last card is the one that works
+hardest -- it takes the most layers, the output and the prediction head -- so it is the
+fastest. The layers are
+laid out from that end: the last card takes blocks for as long as each one brings what it
+leaves free nearer its reserve, the card before it does the same with what remains, and
+the first card takes the rest. Every card of a profile holds at least one block.
+
+The numbers are `nvidia-smi`'s. CUDA on its own counts the fastest card first; every
+process these programs start is told to count in bus order, as `nvidia-smi` does, so
+`CUDA1` in a profile is the card `nvidia-smi` calls 1.
+
+A profile on two cards, as `calibrate` writes it, with the sampler values left out:
+
+```ini
+[qwen3.8-120k-q8-mtp]
+; VRAM REQUIRED: 6185 MiB on CUDA1, 15446 MiB on CUDA0, held from the moment this profile loads
+model = D:\models\unsloth\Qwen3.8-27B-GGUF\Qwen3.8-27B-UD-IQ4_XS.gguf
+cache-type-k = q8_0
+cache-type-v = q8_0
+ctx-size = 120000
+device = CUDA1,CUDA0
+fit = off
+gpu-layers = 99
+spec-draft-n-max = 3
+spec-draft-type-k = q8_0
+spec-draft-type-v = q8_0
+spec-type = draft-mtp
+split-mode = layer
+tensor-split = 21,45
+```
+
+`tensor-split` counts layers per card, in the order `device` names the cards: 21 on the
+older one and 45 on the newer, the output and the head's own layer among the 45. Loaded,
+this profile took 6067 MiB of the 8 GiB card and 15430 of the 16 GiB one -- a little
+under what its requirement says, which is the side `calibrate` errs on. A profile on one card of
+several names that card too, `device = CUDA0` with `split-mode = none`: left unnamed,
+llama.cpp would take the first card it counts.
+
+What each card is left:
+
+| the card | keeps about |
+|---|---|
+| a machine's only card | `reserve_mib` |
+| of several cards, one a desktop draws on | `reserve_multi_gpu_mib`: 2048, enough to work at the desktop while the rest serve |
+| of several cards, one no desktop draws on | `reserve_no_desktop_mib`: 768, what the card keeps from everybody, so a card the monitors are moved off serves with all the rest of its memory |
+| a card lent over the network | `reserve_mib` under `[slave]`: 2048, everything its own machine keeps |
+
+A reserve is the whole of what a card is left: what the driver holds for itself is inside
+that figure rather than taken off beside it, which is why one number is enough to write
+down. Every one of these is a target to land near rather than a line to clear: a layer
+that fits by landing a few megabytes under goes on.
+
+Where nobody is logged in, no desktop draws on any card and every card of several is left
+what a card without one is. That is a machine given over to serving, and logging out of it
+is how to ask for that.
+
+Which card a desktop draws on is read from Windows' own counters, as the card the
+compositor holds video memory on. Not from the monitors: over a remote session Windows
+detaches the machine's own, and `nvidia-smi` then reports none on any card while the
+desktop goes on holding what it holds. So `calibrate` writes the same profiles run from
+another machine as it does at this one.
+
+The micro-batch is searched as well, on one card as on several. `ubatch-size` in
+`[shared]` is where the search starts, and each halving of it down to 128 is placed too.
+A halving costs roughly a tenth of prefill speed, so it is taken only where it brings the
+window more than a tenth of `ample_ctx_tokens` nearer that length -- past it a window buys
+nothing -- and a profile that runs at a smaller one says `ubatch-size` in its section.
+
+On two cards or more, llama.cpp runs pieces of a prompt on the cards at once, holding
+extra working buffers to do it, and generates several per cent faster for it. `calibrate`
+gives that up only where the window without it is at least 30% longer, and a section that
+gives it up carries an `override-tensor` naming a tensor no model has: any override at
+all is what turns it off.
+
+A prediction head costs more than the estimator can be told about: `llama-fit-params`
+takes no `--spec-type`. So on top of its estimate `calibrate` adds what the server holds
+for a head -- its weights and its cache, the working buffers of the draft context on the
+last card, and on every card a snapshot of each recurrent layer's state for every token
+the head drafts, which is what a rejected draft is rolled back to.
+
+**A card lent over the network.** Another machine with an NVIDIA card -- a laptop, say --
+can lend it to this one. It runs llama.cpp's RPC worker, which offers that card to
+whatever connects, and a profile that uses it keeps some of its layers there and reaches
+them across the network.
+
+That machine needs an NVIDIA driver and a copy of this repository, and one command, run
+from that copy in an ordinary console:
+
+```bash
+python -m cm.install slave
+```
+
+It installs llama.cpp into `.llamacpp` the way `install llamacpp` does; registers the
+scheduled task `llama.cpp RPC worker`, which starts the worker at every boot the way
+`autostart` starts the router, as that account and with no password stored; and admits
+the local subnet to the worker's port, 50052, the way `firewall` does. Like those two it
+asks Windows for the rights before doing any of it. No settings file is needed there:
+where one exists, `cuda_version`, `keep_releases` and `log_dir` are read from it, and
+nothing else. Then it says what to type on the machine with the router:
+
+```
+Lending NVIDIA GeForce RTX 5070 Ti Laptop GPU, 12227 MiB, on port 50052.
+Start it now rather than at the next boot: python -m cm.slave start
+
+On the machine with the router:
+  python -m cm.install master <this machine's name or address>:50052 12G
+```
+
+The worker lends the card with the most memory and nothing else. Offered the processor as
+well, it would let the router place layers in that machine's system memory, at the far end
+of a network cable.
+
+`python -m cm.slave start` starts the worker by hand and `python -m cm.slave stop` ends
+it, the way `router start` and `router stop` treat the router: a start stops a worker
+already on the port first, the scheduled task included, and what the worker writes goes
+to `slave.stdout.log` and `slave.stderr.log` in `log_dir`.
+
+**Nothing on that port is authenticated or encrypted.** Whoever reaches it can have the
+card run whatever they send it, which is why the rule admits the local subnet and nothing
+wider.
+
+On the machine with the router, name it and place the models again:
+
+```bash
+python -m cm.install master <that machine> 12G
+python -m cm.calibrate
+python -m cm.router start
+```
+
+`install master` writes one table at the end of the settings file:
+
+```toml
+[slave]
+address     = '<that machine>:50052'
+memory      = '12G'
+reserve_mib = 2048
+```
+
+`memory` is the round figure `install slave` printed. Nothing on the router's machine can
+read a card on another one, so it is taken as written. `reserve_mib` there is everything
+the other machine keeps on its card, the driver included, in one figure -- nothing else is
+taken off it -- and `--reserve` writes another. `--remove` takes the table out, and a
+second `install master` replaces the first, so there is one slave at most. It says whether
+the worker answers, and writes the table either way.
+
+`calibrate` then adds the slave's card last, in front of all of the machine's cards. In
+front, because a card reached over the network is slower than any card in the machine,
+so it is the one that takes what the others leave. A profile across the slave is written
+only where its window is longer than every profile before it gives the same model with
+the same cache and head, beside those rather than instead of them. Its section names the
+worker it reaches:
+
+```ini
+device = RPC0,CUDA1,CUDA0
+rpc = <that machine>:50052
+split-mode = layer
+```
+
+With a slave in the chain llama.cpp does not run pieces of a prompt on the cards at once,
+so there is no second way to place those profiles.
+
+A slave that does not answer when `calibrate` runs is said first, and that run writes no
+profile using its card; the machine's own profiles are written as always. Run `calibrate`
+again once it answers. A profile across the slave needs its worker running whenever it
+loads.
 
 ## Calling it
 

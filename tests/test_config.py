@@ -11,7 +11,8 @@ from pathlib import Path, PureWindowsPath
 
 from cm import config, library, place, workspace
 from cm.config import (DEFAULT_CUDA, DEFAULT_KEPT, DEFAULT_RUNTIME, DERIVED, NEUTRAL,
-                       Config, ConfigError, Runtime, Writing, naming, retuning, unnamed)
+                       Config, ConfigError, Rename, Runtime, Writing, naming, removing,
+                       renames, renaming, retuning, unnamed)
 from cm.library import Key
 from cm.lmstudio import Found, Missing
 from cm.machine import Fitted, Fixed, Share
@@ -306,7 +307,9 @@ class ADerivedKeyIsRefusedRatherThanObeyed(unittest.TestCase):
         written = {"model", "ctx-size", "fit", "gpu-layers", "cache-type-k",
                    "cache-type-v", "n-cpu-moe", "spec-type", "spec-draft-n-max",
                    "spec-draft-type-k", "spec-draft-type-v",
-                   "threads", "threads-batch", "cache-ram", "fit-target"}
+                   "threads", "threads-batch", "cache-ram", "fit-target",
+                   "device", "split-mode", "tensor-split", "ubatch-size", "rpc",
+                   "override-tensor"}
 
         self.assertEqual(written, set(config.DERIVED))
 
@@ -611,6 +614,248 @@ class ScanWritesEntriesAndNothingElse(unittest.TestCase):
 
         self.assertEqual({"qwen3.8", self.QWEN.key, second.key},
                          {one.key for one in given.models})
+
+
+class TheNameForcedOnAnEntryIsTheOneTheLibraryBuilds(unittest.TestCase):
+    """--force keys an entry by its file, and the names are built for the whole set.
+
+    An entry whose key is already that name is not a rename. An entry this may not key
+    -- marked manual, or holding a file the library cannot name -- keeps its key, and
+    that key is spoken for: a name built for another file may not land on it.
+    """
+
+    IQ4XS = PureWindowsPath("unsloth", "Qwen3.8-27B-GGUF", "Qwen3.8-27B-UD-IQ4_XS.gguf")
+    Q4KM = PureWindowsPath("lmstudio-community", "Qwen3.8-27B-GGUF",
+                           "Qwen3.8-27B-Q4_K_M.gguf")
+    PROJECTOR = PureWindowsPath("unsloth", "Qwen3.8-27B-GGUF", "mmproj-Qwen3.8-27B.gguf")
+
+    def entry(self, key, place, *lines) -> str:
+        return (f"[models.{key!r}]\nfile = {str(place)!r}\n"
+                + "".join(f"{line}\n" for line in lines))
+
+    def asked(self, *entries) -> tuple:
+        given = parse(MODEL_ROOT + "\n\n" + "\n".join(entries))
+        return renames(given.models + given.withheld, MODELS)
+
+    def test_an_entry_keyed_by_hand_takes_the_built_name(self):
+        self.assertEqual((Rename(was=Key("short"), now=Key("qwen3.8-27b-ud-iq4xs")),),
+                         self.asked(self.entry("short", self.IQ4XS)))
+
+    def test_an_entry_already_keyed_that_way_is_not_a_rename(self):
+        self.assertEqual((), self.asked(self.entry("qwen3.8-27b-ud-iq4xs", self.IQ4XS)))
+
+    def test_an_entry_marked_manual_keeps_its_key(self):
+        self.assertEqual((), self.asked(self.entry("short", self.IQ4XS,
+                                                   "manual = true")))
+
+    def test_a_manual_entry_holding_a_built_name_is_stepped_around(self):
+        """Its key cannot move, so the name built for the other file goes further out
+        rather than onto it."""
+        asked = self.asked(self.entry("qwen3.8-27b-ud-iq4xs", self.Q4KM, "manual = true"),
+                           self.entry("short", self.IQ4XS))
+
+        self.assertEqual((Rename(was=Key("short"),
+                                 now=Key("unsloth-qwen3.8-27b-ud-iq4xs")),), asked)
+
+    def test_an_entry_holding_a_file_that_is_not_a_model_is_stepped_around(self):
+        """A projector sits beside a model rather than being one, so the library names
+        it nothing -- and the name built for the model may not land on its key."""
+        asked = self.asked(self.entry("qwen3.8-27b-ud-iq4xs", self.PROJECTOR),
+                           self.entry("short", self.IQ4XS))
+
+        self.assertEqual((Rename(was=Key("short"),
+                                 now=Key("unsloth-qwen3.8-27b-ud-iq4xs")),), asked)
+
+    def test_an_entry_whose_file_is_outside_the_library_keeps_its_key(self):
+        outside = somewhere("elsewhere", "Qwen3.8-27B-UD-IQ4_XS.gguf")
+
+        self.assertEqual((), self.asked(self.entry("short", outside)))
+
+
+
+class ScanTakesOutAnEntryWhoseFileIsGone(unittest.TestCase):
+    """An entry naming a file that is not there names nothing.
+
+    It is left over from a model that was deleted, and every run afterwards has a line
+    to say about it. Both its tables go and the file keeps the shape it had; an entry
+    scan cannot cut whole is left alone and named, since half an entry declares a model
+    whose file nothing says.
+    """
+
+    THREE = f"""
+{MODEL_ROOT}
+
+[models.'keep']
+{FILE}
+
+
+[models.'gone']
+{FILE}
+
+[models.'gone'.settings]
+# what this model was given
+temp = '1.0'
+
+
+[models.'after']
+{FILE}
+"""
+
+    def written(self, text: str, key: str = "gone") -> str:
+        return removing(text, (Key(key),)).text
+
+    def test_nothing_to_remove_leaves_the_text_exactly_as_it_was(self):
+        self.assertEqual(self.THREE, removing(self.THREE, ()).text)
+
+    def test_the_entry_and_its_settings_block_both_go(self):
+        written = self.written(self.THREE)
+
+        self.assertNotIn("gone", written)
+        self.assertNotIn("what this model was given", written)
+
+    def test_the_entries_around_it_stay_and_the_file_still_reads(self):
+        given = parse(self.written(self.THREE))
+
+        self.assertEqual(["keep", "after"], [one.key for one in given.models])
+
+    def test_the_file_keeps_the_shape_it_had(self):
+        written = self.written(self.THREE)
+
+        self.assertNotIn("\n\n\n\n", written)
+        self.assertIn(f"[models.'keep']\n{FILE}\n\n\n[models.'after']", written)
+
+    def test_an_entry_that_is_not_there_is_left_alone_and_named(self):
+        left = removing(self.THREE, (Key("nowhere"),))
+
+        self.assertEqual(self.THREE, left.text)
+        self.assertEqual(("nowhere",), tuple(one.key for one in left.untouched))
+
+    def test_an_entry_carrying_another_table_is_left_alone_and_named(self):
+        text = self.THREE + "[models.'gone'.anything]\nsaid = '1'\n"
+        left = removing(text, (Key("gone"),))
+
+        self.assertEqual(text, left.text)
+        self.assertEqual(("gone",), tuple(one.key for one in left.untouched))
+
+    def test_the_note_above_the_entry_goes_with_it(self):
+        """It is about the model named under it, the same way the ones scan writes
+        below the header are. Left behind, it describes something that is not there."""
+        text = self.THREE.replace("[models.'gone']",
+                                  "# fetched by hand\n[models.'gone']")
+
+        self.assertNotIn("# fetched by hand", self.written(text))
+
+    def test_a_note_above_another_entry_is_left_where_it_is(self):
+        text = self.THREE.replace("[models.'after']",
+                                  "# this one stays\n[models.'after']")
+
+        self.assertIn("# this one stays", self.written(text))
+
+    def test_the_last_entry_of_the_file_goes_as_cleanly_as_any_other(self):
+        given = parse(self.written(self.THREE, "after"))
+
+        self.assertEqual(["keep", "gone"], [one.key for one in given.models])
+
+    def test_every_entry_can_go(self):
+        written = self.THREE
+        for key in ("keep", "gone", "after"):
+            written = removing(written, (Key(key),)).text
+
+        self.assertEqual((), parse(written).models)
+
+class ScanRenamesAnEntryByItsHeadersAndNothingElse(unittest.TestCase):
+    """--force keys an entry the way the library names its file today.
+
+    A rename says what a model is called here and nothing else: the file the entry
+    names, the values under it and whatever a person wrote around it all stay where they
+    were. An entry this cannot rewrite whole keeps the key it has and is named -- a key
+    rewritten in one header and left in another declares two models where there was one,
+    and TOML reads such a file as nothing at all.
+    """
+
+    RENAME = Rename(was=Key("qwen3.8"), now=Key("qwen3.8-27b-ud-iq4xs"))
+
+    def written(self, text: str) -> str:
+        return renaming(text, (self.RENAME,)).text
+
+    def left(self, text: str) -> tuple:
+        return renaming(text, (self.RENAME,)).untouched
+
+    def test_nothing_to_rename_leaves_the_text_exactly_as_it_was(self):
+        self.assertEqual(BARE, renaming(BARE, ()).text)
+
+    def test_the_entry_answers_to_the_name_the_library_builds(self):
+        given = parse(self.written(BARE))
+
+        self.assertEqual([self.RENAME.now], [one.key for one in given.models])
+
+    def test_the_file_it_names_is_the_file_it_named(self):
+        given = parse(self.written(BARE))
+
+        self.assertEqual(MODELS / MODEL_FILE, given.models[0].path)
+
+    def test_its_settings_block_is_carried_over_with_it(self):
+        given = parse(self.written(BARE + "[models.'qwen3.8'.settings]\ntemp = '0.6'\n"))
+
+        self.assertEqual("0.6", given.models[0].vendor["temp"])
+
+    def test_what_a_person_wrote_around_it_survives(self):
+        note = "# fetched by hand, do not throw away\n"
+        written = self.written(BARE + note)
+
+        self.assertIn(note, written)
+        self.assertIn("qwen3.8-27b-ud-iq4xs", written)
+
+    def test_an_entry_that_is_not_there_is_left_alone_and_named(self):
+        gone = Rename(was=Key("nowhere"), now=Key("somewhere"))
+        left = renaming(BARE, (gone,))
+
+        self.assertEqual(BARE, left.text)
+        self.assertEqual((gone.was,), tuple(one.key for one in left.untouched))
+
+    def test_an_entry_that_opens_its_settings_twice_is_left_alone(self):
+        twice = (BARE + "[models.'qwen3.8'.settings]\ntemp = '0.6'\n"
+                 + "[models.'qwen3.8'.settings]\ntop-k = '20'\n")
+
+        self.assertEqual(twice, self.written(twice))
+        self.assertEqual((self.RENAME.was,), tuple(one.key for one in self.left(twice)))
+
+    def test_an_entry_carrying_a_table_of_its_own_is_left_alone(self):
+        """One this does not know to rewrite. Renaming the two headers it does know
+        would leave that table under the old key, which is a second model."""
+        besides = BARE + "[models.'qwen3.8'.notes]\nwhy = 'the fast one'\n"
+
+        self.assertEqual(besides, self.written(besides))
+        self.assertEqual((self.RENAME.was,), tuple(one.key for one in self.left(besides)))
+
+    def test_a_name_another_entry_holds_is_taken_once_that_entry_moves(self):
+        """The file keyed 'a' is named 'a-q4km', and the name 'a' belongs to the other
+        file. Writing that one first would declare 'a' twice, so it waits a round."""
+        two = (MODEL_ROOT + "\n\n[models.'a']\nfile = 'p\\r\\A-Q4_K_M.gguf'\n"
+               + "\n[models.'b']\nfile = 'p\\r\\B-Q4_K_M.gguf'\n")
+        done = renaming(two, (Rename(was=Key("b"), now=Key("a")),
+                              Rename(was=Key("a"), now=Key("a-q4km"))))
+
+        self.assertEqual((), done.untouched)
+        self.assertEqual({"a-q4km", "a"}, {one.key for one in parse(done.text).models})
+
+    def test_two_entries_holding_each_other_s_names_are_both_left_alone(self):
+        """A ring nothing can be written out of: writing either one first would declare
+        a key twice, so neither is written and both are named."""
+        two = (MODEL_ROOT + "\n\n[models.'a']\nfile = 'p\\r\\A-Q4_K_M.gguf'\n"
+               + "\n[models.'b']\nfile = 'p\\r\\B-Q4_K_M.gguf'\n")
+        done = renaming(two, (Rename(was=Key("a"), now=Key("b")),
+                              Rename(was=Key("b"), now=Key("a"))))
+
+        self.assertEqual(two, done.text)
+        self.assertEqual({"a", "b"}, {one.key for one in done.untouched})
+
+    def test_another_entry_is_not_touched(self):
+        two = BARE + "[models.'gemma4-12b']\n" + FILE + "\n"
+
+        self.assertIn("[models.'gemma4-12b']", self.written(two))
+        self.assertEqual({"qwen3.8-27b-ud-iq4xs", "gemma4-12b"},
+                         {one.key for one in parse(self.written(two)).models})
 
 
 class ScanBringsAnEntryUpToDateAndTouchesNothingElse(unittest.TestCase):

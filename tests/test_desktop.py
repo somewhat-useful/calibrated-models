@@ -10,8 +10,8 @@ import unittest
 
 from cm.advise import Holder, Pid
 from cm.advise import OnScreen, OutOfSight
-from cm.desktop import (Running, closes, family, held_by_this_window,
-                        holders, not_offered)
+from cm.desktop import (DESKTOP_SHARE, Running, closes, desktops, family,
+                        held_by_this_window, holders, not_offered)
 from cm.machine import Card, Occupancy
 from cm.units import Mib
 
@@ -464,6 +464,36 @@ class TheListReadsFromTheLargestDown(unittest.TestCase):
     def test_the_same_input_gives_the_same_order(self):
         self.assertEqual(holders(DESKTOP, US.pid),
                          holders(tuple(reversed(DESKTOP)), US.pid))
+
+
+class TheDesktopDrawsWhereItsCompositorHoldsMost(unittest.TestCase):
+    """Which cards a desktop is on is asked of the compositor and of nothing else.
+
+    Windows says nothing about it directly: over a remote session it detaches this
+    machine's monitors, and the driver then reports none on any card while the desktop
+    goes on holding what it holds. The compositor holds the most where it draws the
+    desktop, and copies of windows rendered elsewhere where it does not.
+    """
+
+    def test_the_card_it_holds_the_most_on_draws_the_desktop(self):
+        self.assertEqual((False, True), desktops((Mib(192), Mib(2490))))
+
+    def test_a_card_holding_a_share_of_that_draws_one_too(self):
+        """Monitors on two cards are two desktops, each wanting room to work at."""
+        self.assertEqual((True, True), desktops((Mib(1200), Mib(2490))))
+
+    def test_a_card_holding_less_than_the_share_holds_copies(self):
+        """A window rendered on a card and composed onto a screen elsewhere is copied
+        across, and the copy is credited to the compositor. Nobody works at that card."""
+        under = Mib(int(Mib(2490) * DESKTOP_SHARE) - 1)
+
+        self.assertEqual((False, True), desktops((under, Mib(2490))))
+
+    def test_a_machine_nobody_is_logged_in_to_has_no_desktop_card(self):
+        self.assertEqual((False, False), desktops((Mib(0), Mib(0))))
+
+    def test_one_card_holding_it_all_draws_the_desktop(self):
+        self.assertEqual((True,), desktops((Mib(3505),)))
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@ repository, so a correction is made once and reaches every machine that pulls it
 What happens to an entry is decided by the entry:
 
     no entry for the file        one is added, with what the repository recommends
+    an entry whose file is gone  the entry is removed, whatever else it says
     an entry                     its settings block is brought up to date
     an entry with manual         nothing at all
     one written some other way   nothing at all, and the run says which and why
@@ -18,19 +19,32 @@ mark the entry manual = true and it stays changed for good. A model nothing in t
 repository covers keeps whatever it has, and a new entry for one starts on neutral
 values rather than on anybody's recommendation.
 
+A name already in the file is left as it stands, however it was arrived at: it is what
+the router serves that model under, and what anything asking for it holds. --force is
+where that is given up on purpose. It keys every entry the way the library would name
+its file today, so that a name says which file it is -- publisher, model and
+quantisation -- rather than whatever it was called when it was the only one of its
+model. Every profile of a renamed model is served under a new name afterwards, so the
+preset has to be written again.
+
 Taking a model out of service is not done by deleting its entry. The file would be
 unnamed again and the next run would write it back; hidden = true leaves the entry in
 place, which is what makes the removal stick.
+
+Deleting the file is the other way round. An entry naming a file that is not there
+names nothing, and hidden or manual makes no difference to that: the entry goes with
+whatever introduced it, and the run says which and where the file was. Nothing else in
+the program then has to carry a library that a settings file has outlived.
 """
 
 import argparse
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePath
 
 from . import config, files, library, reading, recommended, workspace
-from .config import ConfigError, Model, Writing
+from .config import ConfigError, Model, Rename, Untouched, Writing
 from .library import Key
 from .recommended import Ambiguous, Recommended, RecommendedError, Row, Unknown
 
@@ -39,7 +53,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     given = _arguments(argv if argv is not None else sys.argv[1:])
 
     try:
-        _scan(given.settings)
+        _scan(given.settings, given.force)
     except (ConfigError, RecommendedError) as refusal:
         sys.stdout.flush()
         print(refusal, file=sys.stderr)
@@ -57,6 +71,12 @@ def _arguments(argv: Sequence[str]) -> argparse.Namespace:
                     "manual = true is left alone.")
     parser.add_argument("--settings", type=Path, default=reading.DEFAULT,
                         help="the settings file to read and write")
+    parser.add_argument("--force", action="store_true",
+                        help="key every entry the way the library names its file today, "
+                             "renaming the ones that are keyed some other way. The name "
+                             "is what the router serves a model under, so every renamed "
+                             "model is served under a new name and the preset has to be "
+                             "written again")
 
     return parser.parse_args(list(argv))
 
@@ -69,7 +89,7 @@ class _Left:
     why: str
 
 
-def _scan(settings: Path) -> None:
+def _scan(settings: Path, force: bool) -> None:
     # Read once and kept. What is written back is this text with entries edited into it,
     # so a second read would be a second file: anything that changed on disk between the
     # two would be read as settings and written back over.
@@ -81,26 +101,48 @@ def _scan(settings: Path) -> None:
     rows = recommended.parse(files.read(_shipped()), config.DERIVED | config.FLAGS)
 
     named = read.models + read.withheld
+    gone = tuple(one for one in named if not files.exists(one.path))
+    removal = config.removing(was, tuple(one.key for one in gone))
+    stayed = frozenset(one.key for one in removal.untouched)
+    removed = tuple(one for one in gone if one.key not in stayed)
+    named = tuple(one for one in named if one not in removed)
+
+    renames = config.renames(named, read.model_root) if force else ()
+    renamed = config.renaming(removal.text, renames)
+    now = _keys(named, renames, renamed.untouched)
+
     fresh = config.unnamed(named, files.under(read.model_root, library.SUFFIX),
                            read.model_root)
     adding = tuple(_writing(rows, one.key, one.place)
-                   for one in library.holds(fresh, frozenset(one.key for one in named)))
-    updating, left = _existing(rows, named)
+                   for one in library.holds(fresh, frozenset(now.values())))
+    updating, left = _existing(rows, named, now)
 
     print(f"Model library: {read.model_root}")
     print(f"Recommended:   {len(rows)} model(s) in {workspace.RECOMMENDED}")
     print()
 
-    retuned = config.retuning(was, updating)
+    retuned = config.retuning(renamed.text, updating)
     text = config.naming(retuned.text, adding)
     if text != was:
         files.replace(settings, text)
 
+    done = tuple(one for one in renames if now[one.was] == one.now)
     kept = frozenset(one.key for one in retuned.untouched)
-    _reported(adding,
+    _reported(removed, adding, done,
               tuple(one for one in updating if one.key not in kept),
-              (*left, *(_Left(one.key, one.why) for one in retuned.untouched)))
-    _closing(read.model_root, adding, fresh, changed=text != was)
+              (*left, *(_Left(one.key, one.why)
+                        for one in (*removal.untouched, *renamed.untouched,
+                                    *retuned.untouched))))
+    _closing(read.model_root, adding, done, removed, fresh, changed=text != was)
+
+
+def _keys(named: Sequence[Model], renames: Sequence[Rename],
+          untouched: Sequence[Untouched]) -> dict[Key, Key]:
+    """What each entry is keyed as, once the renames that could be written were."""
+    left_alone = frozenset(one.key for one in untouched)
+    written = {one.was: one.now for one in renames if one.was not in left_alone}
+
+    return {one.key: written.get(one.key, one.key) for one in named}
 
 
 def _shipped() -> Path:
@@ -132,8 +174,8 @@ def _writing(rows: Sequence[Row], key: str, place: PurePath) -> Writing:
                 "narrower.")
 
 
-def _existing(rows: Sequence[Row],
-              named: Sequence[Model]) -> tuple[tuple[Writing, ...], tuple[_Left, ...]]:
+def _existing(rows: Sequence[Row], named: Sequence[Model],
+              now: Mapping[Key, Key]) -> tuple[tuple[Writing, ...], tuple[_Left, ...]]:
     """The entries whose settings scan may bring up to date, and the ones it may not.
 
     An entry nothing covers is left as it is rather than reset: overwriting numbers
@@ -146,7 +188,7 @@ def _existing(rows: Sequence[Row],
             left.append(_Left(one.key, "manual = true"))
             continue
 
-        writing = _writing(rows, one.key, PurePath(one.path))
+        writing = _writing(rows, now[one.key], PurePath(one.path))
         match writing.advice:
             case Unknown(stem):
                 left.append(_Left(one.key, f"nothing recommends {stem} yet"))
@@ -159,9 +201,17 @@ def _existing(rows: Sequence[Row],
 _DID = 12
 
 
-def _reported(adding: Sequence[Writing], updating: Sequence[Writing],
+def _reported(removed: Sequence[Model], adding: Sequence[Writing],
+              renamed: Sequence[Rename], updating: Sequence[Writing],
               left: Sequence[_Left]) -> None:
     """What became of each entry, one line each."""
+    for one in removed:
+        print(f"  {'removed':<{_DID}}{one.key}")
+        print(f"  {'':<{_DID}}no file at {one.path}")
+
+    for one in renamed:
+        print(f"  {'renamed':<{_DID}}{one.was}  ->  {one.now}")
+
     for one in adding:
         print(f"  {'added':<{_DID}}{one.key}")
         print(f"  {'':<{_DID}}{one.place}")
@@ -174,13 +224,20 @@ def _reported(adding: Sequence[Writing], updating: Sequence[Writing],
         print(f"  {'left alone':<{_DID}}{one.key}  ({one.why})")
 
 
-def _closing(model_root: Path, adding: Sequence[Writing],
-             fresh: Sequence[PurePath], changed: bool) -> None:
+def _closing(model_root: Path, adding: Sequence[Writing], renamed: Sequence[Rename],
+             removed: Sequence[Model], fresh: Sequence[PurePath], changed: bool) -> None:
     """What to do next, which is a different thing in each of four situations."""
-    if adding:
+    if adding or renamed or removed:
+        said = []
+        if adding:
+            said.append(f"Added {len(adding)}.")
+        if renamed:
+            said.append(f"Renamed {len(renamed)}.")
+        if removed:
+            said.append(f"Removed {len(removed)}.")
         print()
-        print(f"Added {len(adding)}. The name is what you will ask the router for, so "
-              "look them over, then:")
+        print(f"{' '.join(said)} The name is what you will ask the router for, so look "
+              "them over, then:")
         print("  python -m cm.calibrate")
         return
 
