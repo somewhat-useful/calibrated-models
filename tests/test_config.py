@@ -11,8 +11,8 @@ from pathlib import Path, PureWindowsPath
 
 from cm import config, library, place, workspace
 from cm.config import (DEFAULT_CUDA, DEFAULT_KEPT, DEFAULT_RUNTIME, DERIVED, NEUTRAL,
-                       Config, ConfigError, Rename, Runtime, Writing, naming, renames,
-                       renaming, retuning, unnamed)
+                       Config, ConfigError, Rename, Runtime, Writing, naming, removing,
+                       renames, renaming, retuning, unnamed)
 from cm.library import Key
 from cm.lmstudio import Found, Missing
 from cm.machine import Fitted, Fixed, Share
@@ -671,6 +671,97 @@ class TheNameForcedOnAnEntryIsTheOneTheLibraryBuilds(unittest.TestCase):
 
         self.assertEqual((), self.asked(self.entry("short", outside)))
 
+
+
+class ScanTakesOutAnEntryWhoseFileIsGone(unittest.TestCase):
+    """An entry naming a file that is not there names nothing.
+
+    It is left over from a model that was deleted, and every run afterwards has a line
+    to say about it. Both its tables go and the file keeps the shape it had; an entry
+    scan cannot cut whole is left alone and named, since half an entry declares a model
+    whose file nothing says.
+    """
+
+    THREE = f"""
+{MODEL_ROOT}
+
+[models.'keep']
+{FILE}
+
+
+[models.'gone']
+{FILE}
+
+[models.'gone'.settings]
+# what this model was given
+temp = '1.0'
+
+
+[models.'after']
+{FILE}
+"""
+
+    def written(self, text: str, key: str = "gone") -> str:
+        return removing(text, (Key(key),)).text
+
+    def test_nothing_to_remove_leaves_the_text_exactly_as_it_was(self):
+        self.assertEqual(self.THREE, removing(self.THREE, ()).text)
+
+    def test_the_entry_and_its_settings_block_both_go(self):
+        written = self.written(self.THREE)
+
+        self.assertNotIn("gone", written)
+        self.assertNotIn("what this model was given", written)
+
+    def test_the_entries_around_it_stay_and_the_file_still_reads(self):
+        given = parse(self.written(self.THREE))
+
+        self.assertEqual(["keep", "after"], [one.key for one in given.models])
+
+    def test_the_file_keeps_the_shape_it_had(self):
+        written = self.written(self.THREE)
+
+        self.assertNotIn("\n\n\n\n", written)
+        self.assertIn(f"[models.'keep']\n{FILE}\n\n\n[models.'after']", written)
+
+    def test_an_entry_that_is_not_there_is_left_alone_and_named(self):
+        left = removing(self.THREE, (Key("nowhere"),))
+
+        self.assertEqual(self.THREE, left.text)
+        self.assertEqual(("nowhere",), tuple(one.key for one in left.untouched))
+
+    def test_an_entry_carrying_another_table_is_left_alone_and_named(self):
+        text = self.THREE + "[models.'gone'.anything]\nsaid = '1'\n"
+        left = removing(text, (Key("gone"),))
+
+        self.assertEqual(text, left.text)
+        self.assertEqual(("gone",), tuple(one.key for one in left.untouched))
+
+    def test_the_note_above_the_entry_goes_with_it(self):
+        """It is about the model named under it, the same way the ones scan writes
+        below the header are. Left behind, it describes something that is not there."""
+        text = self.THREE.replace("[models.'gone']",
+                                  "# fetched by hand\n[models.'gone']")
+
+        self.assertNotIn("# fetched by hand", self.written(text))
+
+    def test_a_note_above_another_entry_is_left_where_it_is(self):
+        text = self.THREE.replace("[models.'after']",
+                                  "# this one stays\n[models.'after']")
+
+        self.assertIn("# this one stays", self.written(text))
+
+    def test_the_last_entry_of_the_file_goes_as_cleanly_as_any_other(self):
+        given = parse(self.written(self.THREE, "after"))
+
+        self.assertEqual(["keep", "gone"], [one.key for one in given.models])
+
+    def test_every_entry_can_go(self):
+        written = self.THREE
+        for key in ("keep", "gone", "after"):
+            written = removing(written, (Key(key),)).text
+
+        self.assertEqual((), parse(written).models)
 
 class ScanRenamesAnEntryByItsHeadersAndNothingElse(unittest.TestCase):
     """--force keys an entry the way the library names its file today.

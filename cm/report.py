@@ -38,11 +38,14 @@ def unreachable(endpoint: Endpoint) -> str:
 
 
 def missing(key: str, path: Path) -> str:
-    """A model whose file is not where its entry says. Nothing is placed for it and the
-    run carries on: an entry outlives the file it names -- scan never removes one -- and
-    the other models are still to place."""
+    """A model whose file is not where its entry says.
+
+    Nothing is placed for it and the run carries on: the other models are still to
+    place. scan takes such an entry out, so seeing this means the file went between the
+    two runs -- and the next scan is what tidies up after it.
+    """
     return (f"{key}: no file at {path}, so nothing is placed for it. Fetch the file "
-            "again, or take the entry out of the settings file.")
+            "again, or take the entry out: python -m cm.scan")
 
 
 def too_much(key: str, resident: Mib, room: Mib) -> str:

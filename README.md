@@ -27,7 +27,7 @@ programs that read the machine.
 |---|---|---|
 | `python -m cm` | either | Prints the thirteen below in the order they are run, so that which one comes next is not something to open this file for |
 | `python -m cm.install llamacpp` | the one with the card | Installs the newest llama.cpp release published for this machine's CUDA version, and removes the ones past keeping |
-| `python -m cm.scan` | the one with the card | Adds an entry to the settings file for every model in the library that has none yet, named after the file, and brings every entry's sampler values up to date with `recommended.toml` in this repository. An entry marked `manual = true` is left alone; nothing is ever removed. `--force` also keys every entry the way the library names its file |
+| `python -m cm.scan` | the one with the card | Adds an entry to the settings file for every model in the library that has none yet, named after the file, and brings every entry's sampler values up to date with `recommended.toml` in this repository. An entry marked `manual = true` is left alone; an entry whose file is gone is taken out, whatever else it says. `--force` also keys every entry the way the library names its file |
 | `python -m cm.models` | the one with the card | The models the settings file names: whether the file is in the library, which repository it came from, and the commit that repository is at now. Downloads nothing |
 | `python -m cm.calibrate` | the one with the card | Works out where each model in the settings file sits on this card, and writes `llamacpp.models.ini` — the preset the router reads. Loads nothing; it asks the estimator, which reads GGUF headers, so it takes seconds |
 | `python -m cm.router start` | the one with the card | Runs the server of the newest release unpacked here, on the preset `calibrate` wrote, and reports what it serves. `stop` ends the server that is holding the configured port |
@@ -339,8 +339,15 @@ anybody's recommendation — the block says which of the two it is.
 
 Everything between the settings block's header and whatever follows it belongs to
 `scan` and is rewritten, the provenance comment included. A note of your own goes above
-the header, where it survives. Nothing else in the file is touched: `scan` never removes
-an entry, never reorders one, and never edits a key other than its settings.
+the header, where it survives. Nothing else in the file is touched: `scan` never
+reorders an entry, and never edits a key other than its settings.
+
+One entry it does take out: the one naming a file that is not there. Such an entry
+names nothing, and `hidden` or `manual` makes no difference to that -- both its tables
+go and the run says which entry and where the file was, along with the note above the
+header: it was about the model named under it. An entry that cannot be cut whole -- one
+written twice, or carrying a table besides its settings -- is left alone and named
+instead.
 
 Deleting the block does not leave a model neutral. It leaves it on llama.cpp's own
 defaults -- `temp 0.8`, `top-k 40`, `min-p 0.05` -- which are nobody's recommendation

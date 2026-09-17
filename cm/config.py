@@ -318,6 +318,14 @@ class Rename:
 
 
 @dataclass(frozen=True)
+class Removing:
+    """The settings text with entries taken out, and the ones that could not be."""
+
+    text: str
+    untouched: tuple[Untouched, ...]
+
+
+@dataclass(frozen=True)
 class Renaming:
     """The settings text after every entry that could be renamed was, and the ones that
     could not."""
@@ -410,6 +418,32 @@ def _under(model_root: Path, model: Model) -> PurePath | None:
         return PurePath(model.path).relative_to(model_root)
     except ValueError:
         return None
+
+
+def removing(text: str, keys: Sequence[Key]) -> Removing:
+    """The settings text with the entry for each of these models taken out.
+
+    An entry outlives the file it names for exactly as long as it takes to notice: a
+    model whose file is not there is not a model this machine has, and an entry naming
+    nothing is something every later run has to say a line about. Both tables go, the
+    entry's own and its settings block, along with what stands above the header and
+    introduces it -- a note there is about the model named below it, and left behind it
+    would describe something the file no longer holds.
+
+    An entry this cannot find, or one that carries a table besides its settings, is
+    left alone and named: cutting part of an entry out would leave the rest declaring a
+    model whose file nothing names.
+    """
+    untouched = []
+
+    for key in keys:
+        match _removed(text, key):
+            case _Removed(written):
+                text = written
+            case Untouched(_, _) as left:
+                untouched.append(left)
+
+    return Removing(text=text, untouched=tuple(untouched))
 
 
 def renaming(text: str, renames: Sequence[Rename]) -> Renaming:
@@ -605,6 +639,54 @@ def _renamed(text: str, rename: Rename) -> _Renamed | _Held | Untouched:
         written[block] = f"[models.{_quoted(rename.now)}.{_SETTINGS_KEY}]"
 
     return _Renamed("\n".join(written) + "\n")
+
+
+@dataclass(frozen=True)
+class _Removed:
+    """The whole text, with one entry no longer in it."""
+
+    text: str
+
+
+def _removed(text: str, key: Key) -> _Removed | Untouched:
+    lines = text.splitlines()
+
+    entry = _headers(lines, _ENTRY, key)
+    if len(entry) != 1:
+        return Untouched(key, f'no one [models."{key}"] line to remove')
+
+    opened = entry[0]
+    closed = _closed(lines, opened, key)
+    blocks = _headers(lines, _SETTINGS, key)
+    if any(index < opened or index > closed for index in blocks):
+        return Untouched(key, "its settings block is not under its entry")
+
+    under = tuple(index for index, line in enumerate(lines)
+                  if (said := _UNDER.match(line)) is not None
+                  and _unquoted(said.group("key")) == key)
+    if any(index not in blocks for index in under):
+        return Untouched(key, "it carries a table besides its settings")
+
+    ends = _before(lines, range(opened + 1, closed))
+
+    kept = [*lines[:_separating(lines, opened)], *lines[ends:]]
+
+    return _Removed("\n".join(kept) + "\n")
+
+
+def _separating(lines: Sequence[str], opened: int) -> int:
+    """Where an entry starts once what introduces it is counted as its own.
+
+    The run of comments and blank lines above a header is what stands between the entry
+    before and this one: the note is about the model it introduces, the same way the
+    ones scan writes under the header are. Left behind, it would say something about a
+    model the file no longer names.
+    """
+    starts = opened
+    while starts > 0 and _INTRODUCES.match(lines[starts - 1]):
+        starts -= 1
+
+    return starts
 
 
 def _headers(lines: Sequence[str], header: re.Pattern[str], key: Key) -> tuple[int, ...]:

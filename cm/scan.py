@@ -9,6 +9,7 @@ repository, so a correction is made once and reaches every machine that pulls it
 What happens to an entry is decided by the entry:
 
     no entry for the file        one is added, with what the repository recommends
+    an entry whose file is gone  the entry is removed, whatever else it says
     an entry                     its settings block is brought up to date
     an entry with manual         nothing at all
     one written some other way   nothing at all, and the run says which and why
@@ -29,6 +30,11 @@ preset has to be written again.
 Taking a model out of service is not done by deleting its entry. The file would be
 unnamed again and the next run would write it back; hidden = true leaves the entry in
 place, which is what makes the removal stick.
+
+Deleting the file is the other way round. An entry naming a file that is not there
+names nothing, and hidden or manual makes no difference to that: the entry goes with
+whatever introduced it, and the run says which and where the file was. Nothing else in
+the program then has to carry a library that a settings file has outlived.
 """
 
 import argparse
@@ -95,8 +101,14 @@ def _scan(settings: Path, force: bool) -> None:
     rows = recommended.parse(files.read(_shipped()), config.DERIVED | config.FLAGS)
 
     named = read.models + read.withheld
+    gone = tuple(one for one in named if not files.exists(one.path))
+    removal = config.removing(was, tuple(one.key for one in gone))
+    stayed = frozenset(one.key for one in removal.untouched)
+    removed = tuple(one for one in gone if one.key not in stayed)
+    named = tuple(one for one in named if one not in removed)
+
     renames = config.renames(named, read.model_root) if force else ()
-    renamed = config.renaming(was, renames)
+    renamed = config.renaming(removal.text, renames)
     now = _keys(named, renames, renamed.untouched)
 
     fresh = config.unnamed(named, files.under(read.model_root, library.SUFFIX),
@@ -116,11 +128,12 @@ def _scan(settings: Path, force: bool) -> None:
 
     done = tuple(one for one in renames if now[one.was] == one.now)
     kept = frozenset(one.key for one in retuned.untouched)
-    _reported(adding, done,
+    _reported(removed, adding, done,
               tuple(one for one in updating if one.key not in kept),
               (*left, *(_Left(one.key, one.why)
-                        for one in (*renamed.untouched, *retuned.untouched))))
-    _closing(read.model_root, adding, done, fresh, changed=text != was)
+                        for one in (*removal.untouched, *renamed.untouched,
+                                    *retuned.untouched))))
+    _closing(read.model_root, adding, done, removed, fresh, changed=text != was)
 
 
 def _keys(named: Sequence[Model], renames: Sequence[Rename],
@@ -188,9 +201,14 @@ def _existing(rows: Sequence[Row], named: Sequence[Model],
 _DID = 12
 
 
-def _reported(adding: Sequence[Writing], renamed: Sequence[Rename],
-              updating: Sequence[Writing], left: Sequence[_Left]) -> None:
+def _reported(removed: Sequence[Model], adding: Sequence[Writing],
+              renamed: Sequence[Rename], updating: Sequence[Writing],
+              left: Sequence[_Left]) -> None:
     """What became of each entry, one line each."""
+    for one in removed:
+        print(f"  {'removed':<{_DID}}{one.key}")
+        print(f"  {'':<{_DID}}no file at {one.path}")
+
     for one in renamed:
         print(f"  {'renamed':<{_DID}}{one.was}  ->  {one.now}")
 
@@ -207,14 +225,16 @@ def _reported(adding: Sequence[Writing], renamed: Sequence[Rename],
 
 
 def _closing(model_root: Path, adding: Sequence[Writing], renamed: Sequence[Rename],
-             fresh: Sequence[PurePath], changed: bool) -> None:
+             removed: Sequence[Model], fresh: Sequence[PurePath], changed: bool) -> None:
     """What to do next, which is a different thing in each of four situations."""
-    if adding or renamed:
+    if adding or renamed or removed:
         said = []
         if adding:
             said.append(f"Added {len(adding)}.")
         if renamed:
             said.append(f"Renamed {len(renamed)}.")
+        if removed:
+            said.append(f"Removed {len(removed)}.")
         print()
         print(f"{' '.join(said)} The name is what you will ask the router for, so look "
               "them over, then:")
