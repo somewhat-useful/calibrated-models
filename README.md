@@ -580,8 +580,8 @@ about afterwards:
 NVIDIA GeForce RTX 4080 SUPER   16376 MiB   in use 13996   free 2380
   the router holds 9550 MiB and hands it back when it loads: 11930 to place in
 
-> qwen3.8-45k-q8                13890 MiB   short by 1960 MiB
-  qwen3.8-88k-q4                12640 MiB   short by 710 MiB
+> qwen3.8-45k-nomtp             13890 MiB   short by 1960 MiB
+  qwen3.8-88k-q4-nomtp          12640 MiB   short by 710 MiB
   gemma4-12b                     9310 MiB   loads now, 2620 MiB to spare
 
   [x] chrome                          9184    3480 MiB
@@ -741,12 +741,19 @@ fastest card alone did for the same cache and head. Every card added costs speed
 has to buy window; the profiles add up, and which to load is chosen by name. A slave's
 card is the last one added.
 
+A profile's name is the model's key, the window in thousands of tokens where the model
+has more than one profile, and then what that profile gives up against the best way the
+model runs: `-q4` for a coarser attention cache, `-nomtp` where the file carries a
+prediction head this profile does not run, `-2gpu` for two of the machine's cards and
+`-3gpu` for three, and `-rpc` where a slave's card is among them. A `q8_0` cache, a head
+that runs and one card are not written.
+
 With the desktop on an 8 GiB card and a 16 GiB one beside it, `qwen3.8` gets
-`qwen3.8-25k-q8-mtp` and `qwen3.8-57k-q4-mtp` on the 16 GiB card alone and
-`qwen3.8-120k-q8-mtp` across both, while `gemma4-12b`, which holds its whole trained
-window on the 16 GiB card, gets that one profile and nothing across two.
-`ornith-1.5-35b`, a mixture the 16 GiB card alone holds only with experts in system
-memory, gets one profile across both cards, with the experts of 2 layers there.
+`qwen3.8-25k` and `qwen3.8-57k-q4` on the 16 GiB card alone and `qwen3.8-120k-2gpu`
+across both, while `gemma4-12b`, which holds its whole trained window on the 16 GiB
+card, gets that one profile and nothing across two. `ornith-1.5-35b`, a mixture the
+16 GiB card alone holds only with experts in system memory, gets one profile across both
+cards, `ornith-1.5-35b-2gpu`, with the experts of 2 layers there.
 
 Three rules follow the cards. Where the machine has a second card, every profile runs
 the prediction head a file carries: dropping it would buy window the second card buys
@@ -789,7 +796,7 @@ process these programs start is told to count in bus order, as `nvidia-smi` does
 A profile on two cards, as `calibrate` writes it, with the sampler values left out:
 
 ```ini
-[qwen3.8-120k-q8-mtp]
+[qwen3.8-120k-2gpu]
 ; VRAM REQUIRED: 6185 MiB on CUDA1, 15446 MiB on CUDA0, held from the moment this profile loads
 model = D:\models\unsloth\Qwen3.8-27B-GGUF\Qwen3.8-27B-UD-IQ4_XS.gguf
 cache-type-k = q8_0
@@ -925,9 +932,9 @@ front, because a card reached over the network is slower than any card in the ma
 so it is the one that takes what the others leave. A profile across the slave is written
 only where its window is longer than every profile before it gives the same model with
 the same cache and head, beside those rather than instead of them. Its name ends in
-`-rpc` -- `qwen3.8-120k-q8-mtp-rpc`, or `ornith-1.5-35b-rpc` for a model with that one
-profile -- so what a client asks for says it needs the other machine. Its section names
-the worker it reaches:
+`-rpc` and says nothing of the cards beside it -- `qwen3.8-259k-rpc`, or
+`ornith-1.5-35b-rpc` for a model with that one profile -- so what a client asks for says
+it needs the other machine. Its section names the worker it reaches:
 
 ```ini
 device = RPC0,CUDA1,CUDA0

@@ -8,7 +8,7 @@ than in every test that needs one.
 from cm.estimate import Needs
 from cm.machine import Capability, Card, CudaIndex, Installed, PciAddress
 from cm.nonempty import NonEmpty
-from cm.place import Among, Chain, Layout, Local, Pipeline, local_seat
+from cm.place import Among, Chain, Layout, Local, Pipeline, Settings, Variant, local_seat
 from cm.units import Halvings, Layers, Mib
 
 # The card these tests are written for, and the number llama.cpp gives it.
@@ -41,3 +41,8 @@ def needs(card: Mib, host: Mib) -> Needs:
     """An answer from the estimator about one card. Its working buffers are left inside
     the card's figure rather than told apart, so a head drafts for nothing here."""
     return Needs(cards=NonEmpty(card), working=NonEmpty(Mib(0)), host=host)
+
+
+def shown(chosen: tuple[Settings, ...]) -> tuple[Variant, ...]:
+    """The ways a model may run, as far as its own profiles show them."""
+    return tuple(Variant(one.cache, one.head) for one in chosen)
