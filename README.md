@@ -924,8 +924,10 @@ the worker answers, and writes the table either way.
 front, because a card reached over the network is slower than any card in the machine,
 so it is the one that takes what the others leave. A profile across the slave is written
 only where its window is longer than every profile before it gives the same model with
-the same cache and head, beside those rather than instead of them. Its section names the
-worker it reaches:
+the same cache and head, beside those rather than instead of them. Its name ends in
+`-rpc` -- `qwen3.8-120k-q8-mtp-rpc`, or `ornith-1.5-35b-rpc` for a model with that one
+profile -- so what a client asks for says it needs the other machine. Its section names
+the worker it reaches:
 
 ```ini
 device = RPC0,CUDA1,CUDA0
