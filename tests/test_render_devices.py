@@ -32,9 +32,9 @@ def across(devices, layers, spare, halvings=0, pipeline=Pipeline.ON, ctx=150000,
                                   among=among))
 
 
-def section(settings):
+def section(settings, named="model"):
     _, parsed = read(preset(config(), MACHINE, MEMORY, (placed("model", settings),)))
-    return parsed["model"]
+    return parsed[named]
 
 
 class TheSectionSaysWhereTheLayersGo(unittest.TestCase):
@@ -59,7 +59,7 @@ class TheSectionSaysWhereTheLayersGo(unittest.TestCase):
 
     def test_a_slaves_card_is_reached_through_its_worker_and_overrides_nothing(self):
         written = section(across((SLAVE, SLOW, FAST), (24, 15, 27), (2048, 1024, 2048),
-                                 pipeline=Pipeline.OFF))
+                                 pipeline=Pipeline.OFF), named="model-rpc")
 
         self.assertEqual("worker:50052", written["rpc"])
         self.assertEqual("RPC0,CUDA1,CUDA0", written["device"])
@@ -82,7 +82,7 @@ class EveryDeviceSaysWhatItWillHold(unittest.TestCase):
         text = preset(config(), MACHINE, MEMORY,
                       (placed("model", across((SLAVE, SLOW, FAST), (24, 15, 27),
                                               (2048, 1024, 2048), pipeline=Pipeline.OFF)),))
-        said = stated(text)["model"]
+        said = stated(text)["model-rpc"]
 
         self.assertEqual(1, len(said))
         self.assertIn(f"{REQUIRED}: {12288 - 2048} MiB on RPC0, {8192 - 1024} MiB on CUDA1, "

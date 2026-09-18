@@ -10,10 +10,12 @@ import unittest
 
 from cm import name, place
 from cm.facts import Head, ModelFacts, NoHead
+from cm.machine import CudaIndex
 from cm.name import names
 from cm.nonempty import NonEmpty
-from cm.place import CacheType, ExpertsOnCpu, Settings, WholeCard
-from cm.units import Layers, Mib, Tokens
+from cm.place import (Among, CacheType, Endpoint, ExpertsOnCpu, Layout, Local, Pipeline,
+                      Remote, Settings, WholeCard)
+from cm.units import Halvings, Layers, Mib, Port, Tokens
 from one_card import LAYOUT, UBATCH, chains, needs
 
 RESERVE = Mib(1024)
@@ -63,6 +65,22 @@ EVERY_SHAPE = tuple(profile(ctx, cache, head)
                     for ctx in (25000, 45000)
                     for cache in (CacheType.Q8_0, CacheType.Q4_0)
                     for head in (False, True))
+
+FAST = Local(CudaIndex(0), Mib(16303))
+SLOW = Local(CudaIndex(1), Mib(8192))
+SLAVE = Remote(Endpoint("worker", Port(50052)), Mib(12288))
+
+
+def across(devices, ctx, head=False):
+    """A profile over several devices, the way a machine with more than one card lays
+    them out."""
+    return Settings(ctx=Tokens(ctx), cache=CacheType.Q8_0, head=head,
+                    placement=WholeCard(),
+                    spare=NonEmpty(*(Mib(1024) for _ in devices)),
+                    layout=Layout(devices=NonEmpty(*devices),
+                                  layers=NonEmpty(*(Layers(20) for _ in devices)),
+                                  halvings=Halvings(0), pipeline=Pipeline.OFF,
+                                  among=Among.SEVERAL))
 
 
 class ASingleProfileIsTheModelItself(unittest.TestCase):
@@ -144,6 +162,46 @@ class TheNameIsTheNumbers(unittest.TestCase):
         named = names("qwen3.8-45k-q8", (profile(45000), profile(85000)))
 
         self.assertEqual(["qwen3.8-45k-q8-45k-q8", "qwen3.8-45k-q8-85k-q8"],
+                         [one.name for one in named])
+
+
+
+class AProfileOnASlavesCardSaysSo(unittest.TestCase):
+    """A profile using another machine's card loads only while that machine's worker
+    runs, and its name is where whoever asks for it sees that."""
+
+    def test_a_name_ends_in_rpc_exactly_when_a_slaves_card_is_used(self):
+        chosen = (profile(25000, head=True), across((SLOW, FAST), 60000, head=True),
+                  across((SLAVE, FAST), 90000, head=True),
+                  across((SLAVE, SLOW, FAST), 120000, head=True))
+
+        for one in names("qwen3.8", chosen):
+            with self.subTest(name=one.name):
+                self.assertEqual(isinstance(one.settings.layout.devices.first, Remote),
+                                 one.name.endswith("-rpc"))
+
+    def test_rpc_is_the_last_thing_in_a_name(self):
+        named = names("qwen3.8", (profile(25000, head=True),
+                                  across((SLAVE, SLOW, FAST), 120000, head=True)))
+
+        self.assertEqual(["qwen3.8-25k-q8-mtp", "qwen3.8-120k-q8-mtp-rpc"],
+                         [one.name for one in named])
+
+    def test_a_single_profile_on_a_slaves_card_is_the_key_and_rpc(self):
+        named = names("ornith-1.5-35b", (across((SLAVE, SLOW, FAST), 150000),))
+
+        self.assertEqual(["ornith-1.5-35b-rpc"], [one.name for one in named])
+
+    def test_a_single_profile_on_this_machines_cards_is_the_key_alone(self):
+        named = names("ornith-1.5-35b", (across((SLOW, FAST), 150000),))
+
+        self.assertEqual(["ornith-1.5-35b"], [one.name for one in named])
+
+    def test_the_same_numbers_here_and_across_a_slave_are_two_names(self):
+        named = names("qwen3.8", (across((SLOW, FAST), 120000),
+                                  across((SLAVE, FAST), 120000)))
+
+        self.assertEqual(["qwen3.8-120k-q8", "qwen3.8-120k-q8-rpc"],
                          [one.name for one in named])
 
 
