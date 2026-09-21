@@ -17,7 +17,7 @@ from cm.place import CacheType, ExpertsOnCpu, Settings, WholeCard
 from cm.render import Placed
 from cm.report import about, closing, missing, opening, system, too_much
 from cm.units import Layers, Mib, Tokens
-from one_card import LAYOUT
+from one_card import LAYOUT, shown
 from places import somewhere
 
 MODELS = somewhere("models")
@@ -41,7 +41,7 @@ def settings(ctx=45000, cache=CacheType.Q8_0, head=False,
 
 
 def placed(key, chosen, resident=0) -> Placed:
-    return Placed(model(key), names(key, chosen), Mib(resident))
+    return Placed(model(key), names(key, chosen, shown(chosen)), Mib(resident))
 
 
 class WhatThePlacementsWereComputedAgainstIsSaidFirst(unittest.TestCase):

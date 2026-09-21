@@ -20,7 +20,7 @@ from cm.render import REQUIRED, Placed, preset
 from cm.serving import (DEFAULT_HOST, DEFAULT_IDLE, DEFAULT_PORT,
                         DEFAULT_RESIDENT, Serving)
 from cm.units import Layers, Mib, Tokens
-from one_card import LAYOUT, installed
+from one_card import LAYOUT, installed, shown
 from places import somewhere
 
 MODELS = somewhere("models")
@@ -75,7 +75,7 @@ def settings(ctx, cache=CacheType.Q8_0, head=False, placement=None,
 
 
 def placed(key, *chosen, vendor=None, resident=0) -> Placed:
-    return Placed(model(key, vendor), names(key, chosen), Mib(resident))
+    return Placed(model(key, vendor), names(key, chosen, shown(chosen)), Mib(resident))
 
 
 DENSE = placed("qwen3.8",
@@ -162,9 +162,9 @@ class EveryProfileBecomesOneSection(unittest.TestCase):
     def test_each_profile_appears_once_under_its_own_name(self):
         _, parsed = read(preset(config(), MACHINE, MEMORY, (DENSE, MIXTURE)))
 
-        self.assertEqual(["*", "ornith-1.5-35b", "qwen3.8-33k-q8-mtp",
-                          "qwen3.8-45k-q8", "qwen3.8-62k-q4-mtp",
-                          "qwen3.8-85k-q4"],
+        self.assertEqual(["*", "ornith-1.5-35b", "qwen3.8-33k",
+                          "qwen3.8-45k-nomtp", "qwen3.8-62k-q4",
+                          "qwen3.8-85k-q4-nomtp"],
                          parsed.sections())
 
     def test_a_model_that_did_not_fit_contributes_nothing(self):
@@ -175,12 +175,12 @@ class EveryProfileBecomesOneSection(unittest.TestCase):
 
     def test_two_models_claiming_one_name_are_refused(self):
         """A key may be anything, so a key may be another model's profile name."""
-        clash = placed("qwen3.8-45k-q8", settings(45000))
+        clash = placed("qwen3.8-45k-nomtp", settings(45000))
 
         with self.assertRaises(ConfigError) as refusal:
             preset(config(), MACHINE, MEMORY, (DENSE, clash))
 
-        self.assertEqual("duplicate section: qwen3.8-45k-q8", str(refusal.exception))
+        self.assertEqual("duplicate section: qwen3.8-45k-nomtp", str(refusal.exception))
 
 
 class ThePlacementIsWrittenOutInFull(unittest.TestCase):
@@ -189,10 +189,10 @@ class ThePlacementIsWrittenOutInFull(unittest.TestCase):
     def test_the_window_and_the_cache_are_the_profiles_own(self):
         _, parsed = read(preset(config(), MACHINE, MEMORY, (DENSE,)))
 
-        self.assertEqual("85000", parsed["qwen3.8-85k-q4"]["ctx-size"])
-        self.assertEqual("q4_0", parsed["qwen3.8-85k-q4"]["cache-type-k"])
-        self.assertEqual("q4_0", parsed["qwen3.8-85k-q4"]["cache-type-v"])
-        self.assertEqual("q8_0", parsed["qwen3.8-45k-q8"]["cache-type-k"])
+        self.assertEqual("85000", parsed["qwen3.8-85k-q4-nomtp"]["ctx-size"])
+        self.assertEqual("q4_0", parsed["qwen3.8-85k-q4-nomtp"]["cache-type-k"])
+        self.assertEqual("q4_0", parsed["qwen3.8-85k-q4-nomtp"]["cache-type-v"])
+        self.assertEqual("q8_0", parsed["qwen3.8-45k-nomtp"]["cache-type-k"])
 
     def test_every_section_pins_what_the_loader_would_otherwise_decide(self):
         _, parsed = read(preset(config(), MACHINE, MEMORY, (DENSE, MIXTURE)))
@@ -209,18 +209,18 @@ class ThePlacementIsWrittenOutInFull(unittest.TestCase):
         _, parsed = read(preset(config(), MACHINE, MEMORY, (DENSE, MIXTURE)))
 
         self.assertEqual("15", parsed["ornith-1.5-35b"]["n-cpu-moe"])
-        for name in ("qwen3.8-33k-q8-mtp", "qwen3.8-45k-q8", "qwen3.8-85k-q4"):
+        for name in ("qwen3.8-33k", "qwen3.8-45k-nomtp", "qwen3.8-85k-q4-nomtp"):
             with self.subTest(section=name):
                 self.assertNotIn("n-cpu-moe", parsed[name])
 
     def test_the_draft_head_is_configured_where_it_runs_and_nowhere_else(self):
         _, parsed = read(preset(config(), MACHINE, MEMORY, (DENSE, MIXTURE)))
 
-        drafting = parsed["qwen3.8-33k-q8-mtp"]
+        drafting = parsed["qwen3.8-33k"]
         self.assertEqual("draft-mtp", drafting["spec-type"])
         self.assertEqual(str(render.DRAFT_LOOKAHEAD), drafting["spec-draft-n-max"])
 
-        for name in ("qwen3.8-45k-q8", "ornith-1.5-35b"):
+        for name in ("qwen3.8-45k-nomtp", "ornith-1.5-35b"):
             with self.subTest(section=name):
                 self.assertNotIn("spec-type", parsed[name])
                 self.assertNotIn("spec-draft-n-max", parsed[name])
@@ -233,7 +233,7 @@ class ThePlacementIsWrittenOutInFull(unittest.TestCase):
         """
         _, parsed = read(preset(config(), MACHINE, MEMORY, (DENSE,)))
 
-        for name in ("qwen3.8-33k-q8-mtp", "qwen3.8-62k-q4-mtp"):
+        for name in ("qwen3.8-33k", "qwen3.8-62k-q4"):
             with self.subTest(section=name):
                 cache = parsed[name]["cache-type-k"]
 
@@ -244,14 +244,14 @@ class ThePlacementIsWrittenOutInFull(unittest.TestCase):
         """Without this the test above passes on a constant that happens to match one."""
         _, parsed = read(preset(config(), MACHINE, MEMORY, (DENSE,)))
 
-        self.assertNotEqual(parsed["qwen3.8-33k-q8-mtp"]["spec-draft-type-k"],
-                            parsed["qwen3.8-62k-q4-mtp"]["spec-draft-type-k"])
+        self.assertNotEqual(parsed["qwen3.8-33k"]["spec-draft-type-k"],
+                            parsed["qwen3.8-62k-q4"]["spec-draft-type-k"])
 
     def test_the_file_a_section_serves_is_the_one_the_settings_named(self):
         _, parsed = read(preset(config(), MACHINE, MEMORY, (DENSE,)))
 
         self.assertEqual(str(MODELS / "qwen3.8.gguf"),
-                         parsed["qwen3.8-45k-q8"]["model"])
+                         parsed["qwen3.8-45k-nomtp"]["model"])
 
 
 class TheMachineAndThePersonBothSpeak(unittest.TestCase):
@@ -292,7 +292,7 @@ class TheMachineAndThePersonBothSpeak(unittest.TestCase):
 
         _, parsed = read(preset(config(), MACHINE, MEMORY, (drafts,)))
 
-        for name in ("qwen3.8-33k-q8-mtp", "qwen3.8-45k-q8"):
+        for name in ("qwen3.8-33k", "qwen3.8-45k-nomtp"):
             with self.subTest(section=name):
                 self.assertEqual("1.0", parsed[name]["temp"])
                 self.assertEqual("20", parsed[name]["top-k"])
@@ -319,8 +319,8 @@ class EachModelIsLeftTheCacheItsOwnWeightsDoNotTake(unittest.TestCase):
 
         whole = system_memory(Fitted(), MACHINE, Mib(0)).cache
 
-        self.assertEqual(str(whole), parsed["qwen3.8-45k-q8"]["cache-ram"])
-        self.assertGreater(int(parsed["qwen3.8-45k-q8"]["cache-ram"]),
+        self.assertEqual(str(whole), parsed["qwen3.8-45k-nomtp"]["cache-ram"])
+        self.assertGreater(int(parsed["qwen3.8-45k-nomtp"]["cache-ram"]),
                            int(parsed["ornith-1.5-35b"]["cache-ram"]))
 
     def test_every_profile_of_one_model_is_given_the_same_room(self):

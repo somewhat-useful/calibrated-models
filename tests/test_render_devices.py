@@ -39,21 +39,21 @@ def section(settings, named="model"):
 
 class TheSectionSaysWhereTheLayersGo(unittest.TestCase):
     def test_devices_counts_and_splitting_are_written(self):
-        written = section(across((SLOW, FAST), (25, 41), (1024, 2048)))
+        written = section(across((SLOW, FAST), (25, 41), (1024, 2048)), named="model-2gpu")
 
         self.assertEqual("CUDA1,CUDA0", written["device"])
         self.assertEqual("layer", written["split-mode"])
         self.assertEqual("25,41", written["tensor-split"])
 
     def test_the_cards_running_together_override_nothing(self):
-        written = section(across((SLOW, FAST), (25, 41), (1024, 2048)))
+        written = section(across((SLOW, FAST), (25, 41), (1024, 2048)), named="model-2gpu")
 
         self.assertNotIn("override-tensor", written)
         self.assertNotIn("rpc", written)
 
     def test_cards_kept_apart_are_kept_apart_by_an_override_that_moves_nothing(self):
         written = section(across((SLOW, FAST), (25, 41), (1024, 2048),
-                                 pipeline=Pipeline.OFF))
+                                 pipeline=Pipeline.OFF), named="model-2gpu")
 
         self.assertEqual(f"{NO_TENSOR}=CUDA1", written["override-tensor"])
 
@@ -68,13 +68,15 @@ class TheSectionSaysWhereTheLayersGo(unittest.TestCase):
 
 class TheMicroBatchIsWrittenWhereItIsNotTheSharedOne(unittest.TestCase):
     def test_a_halved_micro_batch_is_written_as_the_size_it_runs_at(self):
-        written = section(across((SLOW, FAST), (25, 41), (1024, 2048), halvings=2))
+        written = section(across((SLOW, FAST), (25, 41), (1024, 2048), halvings=2),
+                          named="model-2gpu")
 
         self.assertEqual("128", written["ubatch-size"])
 
     def test_the_shared_one_is_not_repeated(self):
         self.assertNotIn("ubatch-size",
-                         section(across((SLOW, FAST), (25, 41), (1024, 2048))))
+                         section(across((SLOW, FAST), (25, 41), (1024, 2048)),
+                                 named="model-2gpu"))
 
 
 class EveryDeviceSaysWhatItWillHold(unittest.TestCase):

@@ -71,7 +71,8 @@ def placed(key, facts, estimator) -> Placed:
             answers[question] = estimator(question)
 
     chosen = place.settings(facts, model.allowed, limits, answers)
-    return Placed(model, names(key, chosen), place.resident(chosen, answers))
+    return Placed(model, names(key, chosen, place.variants(facts, model.allowed)),
+                  place.resident(chosen, answers))
 
 
 def config() -> Config:
@@ -116,7 +117,7 @@ threads = 16
 threads-batch = 16
 ubatch-size = 512
 
-[dense-115k-q4]
+[dense-115k-q4-nomtp]
 ; VRAM REQUIRED: 15284 MiB of video memory, held from the moment this profile loads
 model = {dense}
 cache-ram = 56320
@@ -127,7 +128,7 @@ fit = off
 gpu-layers = 99
 temp = 1.0
 
-[dense-33k-q8-mtp]
+[dense-33k]
 ; VRAM REQUIRED: 15294 MiB of video memory, held from the moment this profile loads
 model = {dense}
 cache-ram = 56320
@@ -142,7 +143,7 @@ spec-draft-type-v = q8_0
 spec-type = draft-mtp
 temp = 1.0
 
-[dense-61k-q8]
+[dense-61k-nomtp]
 ; VRAM REQUIRED: 15290 MiB of video memory, held from the moment this profile loads
 model = {dense}
 cache-ram = 56320
@@ -153,7 +154,7 @@ fit = off
 gpu-layers = 99
 temp = 1.0
 
-[dense-62k-q4-mtp]
+[dense-62k-q4]
 ; VRAM REQUIRED: 15284 MiB of video memory, held from the moment this profile loads
 model = {dense}
 cache-ram = 56320

@@ -22,7 +22,7 @@ from cm.render import Placed, preset
 from cm.serving import (DEFAULT_HOST, DEFAULT_IDLE, DEFAULT_PORT,
                         DEFAULT_RESIDENT, Serving)
 from cm.units import Layers, Mib, Tokens
-from one_card import LAYOUT, installed
+from one_card import LAYOUT, installed, shown
 from places import somewhere
 
 MODELS = somewhere("models")
@@ -101,7 +101,7 @@ def settings(ctx, cache=CacheType.Q8_0, head=False, placement=None,
 def placed(key, *chosen) -> Placed:
     model = Model(key=key, path=MODELS / f"{key}.gguf",
                   vendor={}, allowed=place.EVERYTHING, manual=False)
-    return Placed(model, names(key, chosen), Mib(0))
+    return Placed(model, names(key, chosen, shown(chosen)), Mib(0))
 
 
 class WhatCalibrateWritesIsWhatVramReads(unittest.TestCase):
@@ -124,7 +124,7 @@ class WhatCalibrateWritesIsWhatVramReads(unittest.TestCase):
                                  settings(33000, head=True, spare=1001),
                                  settings(45000, spare=1027)),))
 
-        self.assertEqual(["qwen3.8-33k-q8-mtp", "qwen3.8-45k-q8"],
+        self.assertEqual(["qwen3.8-33k", "qwen3.8-45k-nomtp"],
                          [one.name for one in parse(written, CARD)])
 
     def test_the_shared_block_is_nothing_a_person_can_load(self):

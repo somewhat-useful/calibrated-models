@@ -179,7 +179,8 @@ def _place(estimator: Path, read: Config, model: Model, limits: Limits) -> Place
             answers[question] = parse_requirement(proc.run(argv).out)
 
     chosen = place.settings(facts, model.allowed, limits, answers)
-    return Placed(model, names(model.key, chosen), _resident(read, model, chosen, answers))
+    return Placed(model, names(model.key, chosen, place.variants(facts, model.allowed)),
+                  _resident(read, model, chosen, answers))
 
 
 def _resident(read: Config, model: Model, chosen: Sequence[Settings],
