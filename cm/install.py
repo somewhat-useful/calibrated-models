@@ -1,10 +1,12 @@
 """install: put on this machine what this router is made of.
 
-Four things, and they belong to different machines. `llamacpp` is the engine the router
-runs, on the machine with the cards. `pi` is the agent that calls it, on any machine that
-does -- including that one, where somebody works at the card as well as serving from it.
-`slave` makes another machine lend its card, and `master` names that machine in the
-router machine's settings file, so that calibrate places models across its card too.
+Four things, and they belong to different machines. `llamacpp` is the engine, on the
+machine with the router and on a machine lending its card alike: the router runs one
+program of a release and the worker another, and the two have to be the same build.
+`pi` is the agent that calls the router, on any machine that does -- including that
+one, where somebody works at the card as well as serving from it. `slave` makes a
+machine that has llama.cpp lend its card, and `master` names that machine in the router
+machine's settings file, so that calibrate places models across its card too.
 
 The loop is here and it decides nothing: engine.py installs a release, client.py
 installs pi and its extension, task.py and lan.py say what a slave registers and admits,
@@ -18,7 +20,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from . import (autostart, client, config, devices, engine, files, lan, proc, reach,
-               reading, rights, rpc, session, task, upstream, workspace)
+               reading, rights, rpc, session, slave, task, upstream, workspace)
 from .config import ConfigError
 from .machine import UnreadableDevice
 from .pi import CONFIG
@@ -47,17 +49,23 @@ def _arguments(argv: Sequence[str]) -> argparse.Namespace:
     what = parser.add_subparsers(required=True)
 
     llamacpp = what.add_parser(
-        "llamacpp", help="the llama.cpp release the router runs",
-        description="Install the newest llama.cpp release published for this "
-                    "machine's CUDA version, and remove the ones past keeping.")
+        "llamacpp", help="the llama.cpp release the router or the worker runs",
+        description="Install the newest llama.cpp release published for the CUDA "
+                    "version this machine's driver runs, or the build named, record it "
+                    "in the settings file as the build to run, and remove the releases "
+                    "past keeping.")
     llamacpp.add_argument("--settings", type=Path, default=reading.DEFAULT,
-                          help="the settings file to read")
+                          help="the settings file to read and record the build in")
     llamacpp.add_argument("--check", action="store_true",
-                          help="report what is installed and what is available, and "
-                               "download nothing")
+                          help="say which build would be installed, and download and "
+                               "record nothing")
+    llamacpp.add_argument("--build", type=int, metavar="NUMBER",
+                          help="install this build rather than the newest: the one the "
+                               "other machine's --check printed, so that the router and "
+                               "the slave run the same. Pruning leaves it alone")
     llamacpp.add_argument("--force", action="store_true",
-                          help="install even where the newest release is already here, "
-                               "after a partial or damaged install")
+                          help="download even where the release is already here, after a "
+                               "partial or damaged install")
     llamacpp.set_defaults(act=_llamacpp)
 
     pi = what.add_parser(
@@ -70,9 +78,9 @@ def _arguments(argv: Sequence[str]) -> argparse.Namespace:
 
     slave = what.add_parser(
         "slave", help="lend this machine's card to a router on another machine",
-        description="Install llama.cpp here, start the worker that lends this machine's "
-                    "card at every boot, and admit the local subnet to its port. Needs an "
-                    "elevated session; stores no password.")
+        description="Start the worker that lends this machine's card at every boot, "
+                    "from the release install llamacpp put here, and admit the local "
+                    "subnet to its port. Needs an elevated session; stores no password.")
     slave.add_argument("--settings", type=Path, default=reading.DEFAULT,
                        help="the settings file to read, where this machine has one")
     slave.add_argument("--port", type=int, default=rpc.DEFAULT_PORT,
@@ -108,7 +116,8 @@ def _arguments(argv: Sequence[str]) -> argparse.Namespace:
 
 def _llamacpp(given: argparse.Namespace, said: Sequence[str]) -> int:
     _on_windows("llamacpp")
-    engine.install(given.settings, given.check, given.force)
+    asked = upstream.NewestBuild() if given.build is None else upstream.Exactly(given.build)
+    engine.install(given.settings, asked, given.check, given.force)
     return 0
 
 
@@ -126,7 +135,11 @@ def _on_windows(what: str) -> None:
 
 
 def _slave(given: argparse.Namespace, said: Sequence[str]) -> int:
-    """This machine made a slave: a release, the worker at boot, and its port admitted.
+    """This machine made a slave: the worker at boot, and its port admitted.
+
+    Nothing is installed here: install llamacpp is what puts a release on a machine,
+    this one included, and a worker registered with no release to run would fail at
+    every boot. So that is refused first, before the rights are asked for.
 
     Asked for the rights before anything is done, so that the elevated run is the one
     that does the whole of it. A preview asks for nothing: it changes nothing.
@@ -149,6 +162,10 @@ def _slave(given: argparse.Namespace, said: Sequence[str]) -> int:
         print(document)
         return 0
 
+    lending = slave.lending(settings)
+    if not given.remove:
+        slave.runnable(workspace.engines(), lending.build)
+
     changing = ("Removing this machine as a slave" if given.remove else
                 "Making this machine a slave")
     match rights.asked(rights.Asking(module=__spec__.name, said=tuple(said),
@@ -164,10 +181,6 @@ def _slave(given: argparse.Namespace, said: Sequence[str]) -> int:
     if given.remove:
         _unlend(port)
         return 0
-
-    lending = config.lending(files.read(settings) if files.exists(settings) else "")
-    engine.release(lending.cuda, lending.keep_releases, check=False, force=False,
-                   then="Restart the worker to run on it: python -m cm.slave start")
 
     # The task runs as this account without a logon session of its own, so it inherits
     # nothing that would create this on the way.

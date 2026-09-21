@@ -2,8 +2,8 @@
 machine, or stop it.
 
 The loop is here and it decides nothing. rpc.py says what the worker is started with,
-releases.py which release is the newest unpacked, and serving.py what is in the way of a
-start; this starts, waits and reports.
+releases.py which release runs -- the build the settings file records -- and serving.py
+what is in the way of a start; this starts, waits and reports.
 
 Starting takes priority over a worker already on the port, for the same reason a router
 start does: refusing would leave a person guessing which one is live. The scheduled
@@ -24,6 +24,7 @@ from .config import ConfigError
 from .machine import UnreadableDevice
 from .place import Local, device_name
 from .refusal import Refusal
+from .releases import Running
 from .serving import Occupied
 from .units import Port
 
@@ -78,7 +79,7 @@ def _common(parser: argparse.ArgumentParser) -> None:
 
 def _start(given: argparse.Namespace) -> int:
     port = Port(given.port)
-    worker = _worker(workspace.engines())
+    worker = runnable(workspace.engines(), lending(given.settings).build)
     card = _card()
     argv = rpc.arguments(port, card)
 
@@ -96,7 +97,7 @@ def _start(given: argparse.Namespace) -> int:
         return proc.attached((str(worker), *argv), worker.parent)
 
     settings: Path = given.settings
-    logs = rpc.logs((settings.parent / _lending(settings).logs).resolve())
+    logs = rpc.logs((settings.parent / lending(settings).logs).resolve())
     files.ensure(logs.out.parent)
 
     started = proc.detached((str(worker), *argv), worker.parent, logs.out, logs.err)
@@ -118,20 +119,20 @@ def _stop(given: argparse.Namespace) -> int:
     return 0
 
 
-def _lending(settings: Path) -> config.Lending:
+def lending(settings: Path) -> config.Lending:
     """What the settings file says, where this machine has one at all."""
     return config.lending(files.read(settings) if files.exists(settings) else "")
 
 
-def _worker(root: Path) -> Path:
-    """The worker of the newest release unpacked here, resolved at every start."""
-    for release in releases.releases(files.directories(root)):
+def runnable(root: Path, running: Running) -> Path:
+    """The worker of the build the settings file records, or of the newest release here
+    where it records none, resolved at every start."""
+    for release in releases.to_run(releases.releases(files.directories(root)), running):
         worker = root / release.name / rpc.WORKER
         if files.exists(worker):
             return worker
 
-    raise Refusal(f"No llama.cpp release under {root} carries {rpc.WORKER}.\n"
-                  "Install one: python -m cm.install slave")
+    raise Refusal(releases.unfound(root, rpc.WORKER, running))
 
 
 def _card() -> str:

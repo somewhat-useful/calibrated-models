@@ -11,10 +11,9 @@ from pathlib import Path
 from xml.etree import ElementTree
 
 from cm import config, lan, rpc, task
-from cm.config import DEFAULT_CUDA, DEFAULT_KEPT
 from cm.place import Endpoint
+from cm.releases import Recorded, Unrecorded
 from cm.units import Port
-from cm.upstream import Cuda
 from places import somewhere
 from test_lan import asked
 from test_task import SCHEMA, WHO, one
@@ -137,20 +136,18 @@ class TheWorkerOffersOneCardToEveryAddress(unittest.TestCase):
 
 class ASlaveReadsOnlyWhatItNeeds(unittest.TestCase):
     def test_a_machine_with_no_settings_file_runs_on_the_defaults(self):
-        self.assertEqual(config.Lending(cuda=DEFAULT_CUDA, keep_releases=DEFAULT_KEPT,
-                                        logs=Path("logs")),
+        self.assertEqual(config.Lending(logs=Path("logs"), build=Unrecorded()),
                          config.lending(""))
 
     def test_what_the_file_says_is_what_it_reads(self):
-        read_back = config.lending("cuda_version = '12.4'\nkeep_releases = 3\n"
-                                   "log_dir = 'worker-logs'\n")
+        read_back = config.lending("llamacpp_build = 11065\nlog_dir = 'worker-logs'\n")
 
-        self.assertEqual(config.Lending(cuda=Cuda("12.4"), keep_releases=3,
-                                        logs=Path("worker-logs")), read_back)
+        self.assertEqual(config.Lending(logs=Path("worker-logs"), build=Recorded(11065)),
+                         read_back)
 
     def test_a_file_naming_no_models_and_no_library_is_not_refused(self):
         """What parse would refuse for want of a model root is nothing a slave needs."""
-        self.assertEqual(DEFAULT_CUDA, config.lending("reserve_mib = 1024\n").cuda)
+        self.assertEqual(Unrecorded(), config.lending("reserve_mib = 1024\n").build)
 
 
 if __name__ == "__main__":

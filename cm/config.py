@@ -22,10 +22,11 @@ from .place import (DEFAULT_AMPLE_CTX, DEFAULT_MIN_CTX, DEFAULT_MULTI_GPU_RESERV
                     DEFAULT_NO_DESKTOP_RESERVE, DEFAULT_RESERVE, DEFAULT_SLAVE_RESERVE,
                     EVERYTHING, Allowed, CacheType, Endpoint, Worker)
 from .recommended import Advised, Recommended, Setting, Unknown
+from .releases import Recorded, Running, Unrecorded
 from .serving import (DEFAULT_HOST, DEFAULT_IDLE, DEFAULT_PORT, DEFAULT_RESIDENT, LOGS,
                       Serving)
 from .units import Mib, Port, Seconds, Tokens
-from .upstream import Cuda
+from .upstream import Cuda, NewestRunnable, Wanted
 from .workspace import RECOMMENDED
 
 # What a value may be in a preset file. A router flag is a word, a number or a switch.
@@ -69,11 +70,18 @@ FLAGS = frozenset({HIDDEN.name, MANUAL.name})
 
 DEFAULT_PRESET = "llamacpp.models.ini"
 
-# Which CUDA build of a release to install, and how many releases to keep once a newer
-# one is unpacked. Two leaves the one that was running to fall back to; older ones are
-# some 670 MB each.
-DEFAULT_CUDA = Cuda("13.3")
+# Which CUDA build of a release to install where the settings file pins none, and how
+# many releases to keep once a newer one is unpacked. Two leaves the one that was running
+# to fall back to; older ones are some 670 MB each.
+DEFAULT_CUDA = NewestRunnable()
 DEFAULT_KEPT = 2
+
+# How cuda_version is written: the way the archives name the version, 13.4.
+_CUDA = re.compile(r"(\d+)\.(\d+)")
+
+# The build every program here runs, as install records it: the one it put in place
+# last. Written by install rather than by hand, though a hand may change it.
+BUILD = "llamacpp_build"
 
 
 class ConfigError(Exception):
@@ -122,7 +130,7 @@ class Config:
     """The settings file, read."""
 
     model_root: Path
-    cuda: Cuda
+    cuda: Wanted
     keep_releases: int
     preset_path: Path
     serving: Serving
@@ -142,6 +150,8 @@ class Config:
     reserve_no_desktop: Mib = DEFAULT_NO_DESKTOP_RESERVE
     # The machine lending its card, where the file names one.
     slave: NoSlave | Worker = NoSlave()
+    # The build the router and the estimator run.
+    build: Running = Unrecorded()
 
 
 def parse(text: str, library: Library) -> Config:
@@ -171,7 +181,7 @@ def parse(text: str, library: Library) -> Config:
 
     return Config(
         model_root=model_root,
-        cuda=Cuda(_text(raw, "cuda_version", DEFAULT_CUDA.version)),
+        cuda=_cuda(raw),
         keep_releases=_whole(raw, "keep_releases", DEFAULT_KEPT),
         preset_path=Path(str(raw.get("preset_path", DEFAULT_PRESET))),
         serving=_serving(raw),
@@ -188,17 +198,41 @@ def parse(text: str, library: Library) -> Config:
         reserve_no_desktop=Mib(_whole(raw, "reserve_no_desktop_mib",
                                       DEFAULT_NO_DESKTOP_RESERVE)),
         slave=_slave(raw),
+        build=_build(raw),
     )
 
 
 @dataclass(frozen=True)
-class Lending:
-    """What a machine lending its card reads from its settings file: which releases it
-    installs and keeps, and where its worker writes."""
+class Installing:
+    """What install reads from a settings file: which CUDA version to install a release
+    for, how many releases to keep, and which build runs now."""
 
-    cuda: Cuda
+    cuda: Wanted
     keep_releases: int
+    build: Running
+
+
+def installing(text: str) -> Installing:
+    """The settings text as install reads it, on whichever machine.
+
+    None of it has to be there. A machine lending its card names no model and keeps no
+    library, and installs llama.cpp all the same, so nothing a router needs is asked
+    for here.
+    """
+    raw = tomllib.loads(text)
+
+    return Installing(cuda=_cuda(raw),
+                      keep_releases=_whole(raw, "keep_releases", DEFAULT_KEPT),
+                      build=_build(raw))
+
+
+@dataclass(frozen=True)
+class Lending:
+    """What a machine lending its card reads from its settings file: where its worker
+    writes, and which build it runs."""
+
     logs: Path
+    build: Running = Unrecorded()
 
 
 def lending(text: str) -> Lending:
@@ -209,18 +243,40 @@ def lending(text: str) -> Lending:
     """
     raw = tomllib.loads(text)
 
-    return Lending(cuda=Cuda(_text(raw, "cuda_version", DEFAULT_CUDA.version)),
-                   keep_releases=_whole(raw, "keep_releases", DEFAULT_KEPT),
-                   logs=_logs(raw))
+    return Lending(logs=_logs(raw), build=_build(raw))
+
+
+def recording_the_build(text: str, number: int) -> str:
+    """The settings text, recording this build as the one to run.
+
+    The key replaces one already there, written or commented out, and is prepended where
+    there is none -- a top-level key after the first table header would belong to that
+    table. Everything else in the file stays as it was written.
+    """
+    written = f"{BUILD} = {number}"
+    lines = text.splitlines()
+
+    for index, line in enumerate(lines):
+        if line.lstrip().removeprefix("#").lstrip().startswith(BUILD):
+            lines[index] = written
+            return "\n".join(lines) + "\n"
+
+    return f"{written}\n{text}"
+
+
+def names_the_library(text: str) -> bool:
+    """Whether the settings text says where the models are, rather than leaving it to
+    LM Studio's record."""
+    named = tomllib.loads(text).get("model_root")
+    return isinstance(named, str) and bool(named.strip())
 
 
 def naming_the_library(text: str, models: Path) -> str:
     """The settings text, with model_root naming this directory.
 
     Where LM Studio is not installed there is nothing on the machine that says where
-    the models are, and install asks. This is where the answer goes: into the copy it
-    just made, rather than being held for that one run and asked for again by the next
-    command.
+    the models are, and scan asks. This is where the answer goes: into the file, rather
+    than being held for that one run and asked for again by the next command.
 
     The key replaces the one the template carries commented out, wherever the template
     puts it, and is prepended where there is none -- a top-level key after the first
@@ -830,6 +886,20 @@ def _count(shared: Mapping[str, Value], key: str, fallback: int) -> int:
     return value
 
 
+def _cuda(raw: Mapping[str, object]) -> Wanted:
+    """The CUDA version cuda_version pins, or none where the file does not name one."""
+    if "cuda_version" not in raw:
+        return DEFAULT_CUDA
+
+    written = _text(raw, "cuda_version", "")
+    named = _CUDA.fullmatch(written)
+    if named is None:
+        raise ConfigError(f"cuda_version is {written!r}; write it the way the archives "
+                          "name the version, as '13.4'")
+
+    return Cuda(int(named[1]), int(named[2]))
+
+
 def _text(raw: Mapping[str, object], key: str, fallback: str) -> str:
     value = raw.get(key, fallback)
     if not isinstance(value, str) or not value.strip():
@@ -993,6 +1063,19 @@ def unslaved(text: str) -> str:
         start -= 1
 
     return "\n".join([*lines[:start], *lines[ends:]]) + "\n"
+
+
+def _build(raw: Mapping[str, object]) -> Running:
+    """The build the file records, or none where it records none."""
+    if BUILD not in raw:
+        return Unrecorded()
+
+    number = _whole(raw, BUILD, 0)
+    if number < 1:
+        raise ConfigError(f"{BUILD} is {number}; it is the number of a llama.cpp build, "
+                          "as in b11070")
+
+    return Recorded(number)
 
 
 def _whole(raw: Mapping[str, object], key: str, fallback: int) -> int:

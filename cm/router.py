@@ -1,8 +1,8 @@
 """router: start the llama.cpp router, or stop whatever is serving.
 
 The loop is here and it decides nothing. serving.py says what the command line is and
-where a running router writes, releases.py says which release is the newest unpacked,
-and this starts, waits and reports.
+where a running router writes, releases.py says which release runs -- the build the
+settings file records -- and this starts, waits and reports.
 
 Starting takes priority over whatever is serving now. Refusing because something else
 got there first would leave the person guessing which configuration is live, so a start
@@ -25,6 +25,7 @@ from .advise import Pid
 from .config import ConfigError
 from .machine import UnreadableDevice
 from .refusal import Refusal
+from .releases import Running
 from .served import Router
 from .serving import SERVER, Logs, Occupied, Serving
 from .units import Port
@@ -94,7 +95,7 @@ def _start(given: argparse.Namespace) -> int:
     # unpacked into, and a preset named relative to this one would be looked for there.
     preset = (settings.parent / read.preset_path).resolve()
     logs = serving.logs((settings.parent / running.logs).resolve())
-    server = _server(workspace.engines())
+    server = _server(workspace.engines(), read.build)
     argv = serving.arguments(preset, running, logs.router)
 
     if given.print_command:
@@ -147,19 +148,19 @@ def _stop(given: argparse.Namespace) -> int:
     return 0
 
 
-def _server(root: Path) -> Path:
-    """What to run: the server of the newest release unpacked here.
+def _server(root: Path, running: Running) -> Path:
+    """What to run: the server of the build the settings file records, or of the newest
+    release here where it records none.
 
-    Resolved at every start rather than written down anywhere, which is what makes an
-    update take effect on the next start and nothing else.
+    Resolved at every start, which is what makes an install take effect on the next
+    start and nothing else.
     """
-    for release in releases.releases(files.directories(root)):
+    for release in releases.to_run(releases.releases(files.directories(root)), running):
         server = root / release.name / SERVER
         if files.exists(server):
             return server
 
-    raise Refusal(f"No llama.cpp release under {root} carries {SERVER}.\n"
-                  "Install one: python -m cm.install llamacpp")
+    raise Refusal(releases.unfound(root, SERVER, running))
 
 
 def _preview(settings: Path, server: Path, preset: Path, running: Serving,

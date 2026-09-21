@@ -43,9 +43,10 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePath
 
-from . import config, files, library, reading, recommended, workspace
+from . import config, devices, files, library, reading, recommended, workspace
 from .config import ConfigError, Model, Rename, Untouched, Writing
 from .library import Key
+from .lmstudio import Found, Missing
 from .recommended import Ambiguous, Recommended, RecommendedError, Row, Unknown
 
 
@@ -93,7 +94,7 @@ def _scan(settings: Path, force: bool) -> None:
     # Read once and kept. What is written back is this text with entries edited into it,
     # so a second read would be a second file: anything that changed on disk between the
     # two would be read as settings and written back over.
-    was = reading.text(settings)
+    was = _library_named(settings, reading.text(settings))
     read = reading.parsed(was)
     if not files.exists(read.model_root):
         raise ConfigError(f"model_root does not exist: {read.model_root}")
@@ -134,6 +135,61 @@ def _scan(settings: Path, force: bool) -> None:
                         for one in (*removal.untouched, *renamed.untouched,
                                     *retuned.untouched))))
     _closing(read.model_root, adding, done, removed, fresh, changed=text != was)
+
+
+def _library_named(settings: Path, text: str) -> str:
+    """The settings text, saying where the models are wherever nothing else does.
+
+    One key cannot be defaulted and cannot be read off the machine: where the models
+    are. LM Studio answers it where LM Studio is installed, and where it is not, the
+    person running this is the only one who knows. Asked here, the first command that
+    needs the models, and written into the file: the alternative is a settings file
+    that every later command refuses for the same reason, which is a worse way of asking
+    the same question.
+    """
+    if config.names_the_library(text):
+        return text
+
+    match devices.library():
+        case Found(_):
+            return text
+        case Missing(looked):
+            named = config.naming_the_library(text, _asked(looked, settings))
+            files.replace(settings, named)
+            print(f"Wrote model_root into {settings.name}")
+            print()
+            return named
+
+
+def _asked(looked: Path, settings: Path) -> Path:
+    """Where the models are, asked for."""
+    if not sys.stdin.isatty():
+        raise ConfigError(
+            f"There is no LM Studio library at {looked}, and there is nobody to ask: "
+            "this is not a terminal.\n"
+            f"Set model_root in {settings.name} to the directory the models are under.")
+
+    print(f"There is no LM Studio library at {looked}, so nothing on this machine says "
+          "where the models are.")
+
+    said = _said("Directory the models are under: ")
+    if not said:
+        raise ConfigError("Nothing was said, so nothing was written. Run this again, "
+                          f"or set model_root in {settings.name} yourself.")
+
+    return Path(said)
+
+
+def _said(question: str) -> str:
+    """One answer, as a person types it.
+
+    Quotes stripped: a path pasted out of Explorer arrives in them, and a directory
+    called "D:\\models" with the quotes in the name is not what anybody meant.
+    """
+    try:
+        return input(question).strip().strip('"')
+    except EOFError:
+        return ""
 
 
 def _keys(named: Sequence[Model], renames: Sequence[Rename],

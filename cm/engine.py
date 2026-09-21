@@ -5,31 +5,35 @@ and says which release can be installed, releases.py says what is here already a
 is past keeping, and this asks, downloads, unpacks and removes.
 
 A release is assembled in a staging directory beside the others and moved into place
-only once the server in it says it is the build that was asked for. Nothing part-way
-downloaded ever becomes the newest release, which matters because the newest is what
-everything runs: unpacking is what makes a release current, so a broken one would make
-itself current by being unpacked.
+only once the server in it says it is the build that was asked for, and only then is it
+recorded in the settings file as the build to run. Nothing part-way downloaded is ever
+the release something runs.
+
+This is the one place a release is put on a machine, the router's or a slave's alike:
+the two have to run the same build to talk at all, and one command on both, told the
+same build, is how they come to.
 """
 
 import json
 import shutil
-import sys
 import tempfile
 import urllib.error
 import urllib.request
 from collections.abc import Sequence
 from pathlib import Path
 
-from . import (config, devices, files, proc, reading, releases, session, upstream,
+from . import (architectures, config, devices, files, proc, releases, session, upstream,
                workspace)
+from .architectures import Architectures, Unread
 from .config import ConfigError
-from .lmstudio import Found, Library, Missing
 from .refusal import Refusal
-from .releases import Release
+from .releases import Recorded, Release, Running, Unrecorded
 from .rpc import WORKER
 from .serving import SERVER
 from .units import Bytes
-from .upstream import Absent, Asset, Cuda, Latest, Present
+from .upstream import (Absent, AsPinned, Asked, Asset, Choice, Cuda, Exactly, HeldBack,
+                       Latest, Newest, NewestBuild, PinnedHeldBack, Present, Published,
+                       Unpublished, hindered)
 
 # GitHub asks every caller to say what it is, and turns away one that does not.
 HEADERS = {"User-Agent": "llamacpp-local-updater"}
@@ -38,59 +42,176 @@ HEADERS = {"User-Agent": "llamacpp-local-updater"}
 # and a download that is arriving is answering.
 TIMEOUT = 120
 
+# What the API answers for a tag nobody published.
+NOT_FOUND = 404
+
+# Left in a release installed by naming its build. Pruning passes it over: it was put
+# there by hand, and it goes the same way.
+BY_HAND = "installed-by-hand.txt"
+BY_HAND_SAYS = ("Installed with python -m cm.install llamacpp --build. Pruning leaves this "
+                "release alone; remove it by hand.\n")
+
 _MEGABYTE = 1048576
 
 
-def install(settings: Path, check: bool, force: bool) -> None:
-    """The newest release published for this machine's CUDA version, put here."""
+def install(settings: Path, asked: Asked, check: bool, force: bool) -> None:
+    """A release put here and recorded in the settings file as the build to run: the
+    build asked for, or the newest published for the CUDA version this machine takes.
+
+    A release already here is not downloaded again. Asking for it is how a machine is
+    moved back onto a build it has, and recording it is all that takes.
+    """
     _settings(settings)
-
-    read = reading.read(settings)
-    release(read.cuda, read.keep_releases, check, force,
-            then="Restart the router to run on it: python -m cm.router start")
-
-
-def release(cuda: Cuda, keep: int, check: bool, force: bool, then: str) -> None:
-    """The newest release published for this CUDA version, put here, and the ones past
-    keeping removed. `then` is what to do once a new one is in, which depends on what
-    this machine runs from it."""
+    read = config.installing(files.read(settings))
     root = workspace.engines()
 
     installed = releases.releases(files.directories(root))
-    print(f"llama.cpp under {root}, CUDA {cuda.version}")
+    print(f"llama.cpp under {root}")
     print("Installed: " + (", ".join(one.name for one in installed) or "none"))
+    print(f"Runs:      {_runs(read.build)}")
 
-    latest = upstream.latest(upstream.published(_answer()), cuda)
+    driver = devices.driver()
+    cards = devices.attached()
+    print(f"Driver:    {driver.version}, CUDA {driver.cuda.version}")
+    for one in cards:
+        print(f"Card {one.index}:    {one.card.name}, compute capability "
+              f"{one.capability.major}.{one.capability.minor}")
+
+    published = _published(asked)
+    known = _architectures(published)
+    choice = upstream.choose(read.cuda, published, driver.cuda, cards, known)
+    cuda = choice.cuda
+    print(_chosen(choice, driver.cuda))
+
+    latest = upstream.latest(published, cuda)
     if latest.incomplete:
         print("Skipped (archive not uploaded yet): "
               + ", ".join(f"b{build}" for build in latest.incomplete))
-    print(f"Latest:    b{latest.build} (published {latest.when})")
-
-    if releases.current(installed, latest.build) and not force:
-        print("Already on the latest build. Nothing to do.")
-        return
+    print(f"Build:     b{latest.build} (published {latest.when})")
 
     target = root / upstream.directory(latest.build, cuda)
+    here = any(one.name == target.name for one in installed) and not force
+    alike = releases.built_against(installed, cuda)
 
-    if check:
-        _would(installed, latest, target)
+    if here and read.build == Recorded(latest.build) and not isinstance(asked, Exactly):
+        print(f"{target.name} is here and recorded as the build to run. Nothing to do.")
         return
 
-    files.ensure(root)
-    _assemble(root, installed, latest, target)
-    _prune(root, keep)
+    if check:
+        _would(installed, alike, latest, target, here)
+        return
 
     print()
-    print(f"Now running: {_server(root)}")
-    print(then)
+    if here:
+        print(f"{target.name} is already here: nothing to download.")
+    else:
+        files.ensure(root)
+        _assemble(root, alike, latest, target)
+
+    if isinstance(asked, Exactly):
+        files.write(target / BY_HAND, BY_HAND_SAYS)
+    _record(settings, latest.build)
+    _prune(root, read.keep_releases, target.name)
+
+    print()
+    print(f"Runs from now on: {target}")
+    print("Restart what runs from it: python -m cm.router start on the machine with the "
+          "router, python -m cm.slave start on a machine lending its card.")
+
+
+def _published(asked: Asked) -> tuple[Published, ...]:
+    """The releases to choose from: the recent ones, or the one build asked for,
+    however old."""
+    match asked:
+        case NewestBuild():
+            return upstream.published(
+                _answer(upstream.RELEASES_URL,
+                        absent=f"{upstream.RELEASES_URL} lists nothing."))
+        case Exactly(number):
+            return upstream.published(
+                [_answer(upstream.tagged(number),
+                         absent=f"No llama.cpp release is tagged b{number}. The "
+                                "published ones are at "
+                                f"https://github.com/{upstream.REPO}/releases")])
+
+
+def _architectures(published: Sequence[Published]) -> Architectures:
+    """Which cards the newest of these builds carries finished code for, as its own
+    source says.
+
+    Where that cannot be read -- the source moved, the network did not answer -- it is
+    said, and nothing is taken as finished: every build is then held to what the driver
+    runs on any card, which is true whatever a build carries.
+    """
+    match published:
+        case ():
+            return architectures.NOTHING_KNOWN
+        case (newest, *_):
+            pass
+
+    try:
+        said = architectures.read(_source(newest.build, architectures.SOURCE),
+                                  _source(newest.build, architectures.WORKFLOW))
+    except Refusal as unanswered:
+        said = Unread(str(unanswered))
+
+    match said:
+        case Architectures() as known:
+            return known
+        case Unread(why):
+            print(f"Which cards b{newest.build} carries finished code for could not be "
+                  f"read: {why}. Only a build no newer than the driver is taken.")
+            return architectures.NOTHING_KNOWN
+
+
+def _source(build: int, path: str) -> str:
+    """One file of the project's source, as it stood at this build's tag."""
+    url = upstream.source(build, path)
+    request = urllib.request.Request(url, headers=HEADERS)
+
+    try:
+        with urllib.request.urlopen(request, timeout=TIMEOUT) as answer:
+            return answer.read().decode("utf-8")
+    except (urllib.error.URLError, OSError, UnicodeDecodeError) as unreachable:
+        raise Refusal(f"{url} did not answer: {unreachable}") from None
+
+
+def _runs(build: Running) -> str:
+    """Which build this machine runs now, as its settings file has it."""
+    match build:
+        case Recorded(number):
+            return f"b{number}, as the settings file records it"
+        case Unrecorded():
+            return "the newest release here: the settings file records no build yet"
+
+
+def _chosen(choice: Choice, driver: Cuda) -> str:
+    """Which CUDA version the release is for, and why that one."""
+    match choice:
+        case Newest(cuda):
+            return f"CUDA {cuda.version}: the newest published, and it runs here"
+        case HeldBack(newest, cuda, why):
+            return (f"CUDA {cuda.version}: the newest that runs here. The newest "
+                    f"published, CUDA {newest.version}, {hindered(why, newest, driver)}; "
+                    "update the NVIDIA driver to run it")
+        case AsPinned(cuda):
+            return f"CUDA {cuda.version}: as cuda_version pins it"
+        case Unpublished(pinned, cuda):
+            return (f"CUDA {cuda.version}: cuda_version pins {pinned.version}, which no "
+                    "release is built for lately, so the newest that runs here instead")
+        case PinnedHeldBack(pinned, cuda, why):
+            return (f"CUDA {cuda.version}: cuda_version pins {pinned.version}, which "
+                    f"{hindered(why, pinned, driver)}, so the newest that runs here "
+                    "instead")
 
 
 def _settings(settings: Path) -> None:
     """The settings file, made from the one that ships where this machine has none yet.
 
     Copied rather than refused: somebody who has just been handed the scripts should not
-    have to write a file by hand to use them. What the copy cannot answer for itself is
-    asked for once, here, rather than by every command that reads it afterwards.
+    have to write a file by hand to use them. Nothing in the copy has to be answered
+    before a release is installed. Where the models are is asked by scan, the first
+    command that needs them, and a machine lending its card never needs them at all.
     """
     if files.exists(settings):
         return
@@ -100,74 +221,35 @@ def _settings(settings: Path) -> None:
         raise ConfigError(f"{settings.name} not found at {settings}, and neither is "
                           f"the file it would be copied from: {template}")
 
-    files.write(settings,
-                _filled(files.read(template), devices.library(), settings))
+    files.write(settings, files.read(template))
 
     print(f"Copied {template.name} to {settings}")
-    print("It names no model yet. Write an entry for each one in the library, and look "
-          "the names over: python -m cm.scan")
+    print("On the machine with the router it names no model yet: python -m cm.scan "
+          "writes an entry for each one in the library.")
     print()
 
 
-def _filled(template: str, library: Library, settings: Path) -> str:
-    """The template as this machine needs it before anything can read it.
+def _record(settings: Path, number: int) -> None:
+    """The build written into the settings file as the one everything here runs."""
+    was = files.read(settings)
+    now = config.recording_the_build(was, number)
+    if now != was:
+        files.replace(settings, now)
 
-    One key cannot be defaulted and cannot be read off the machine: where the models
-    are. LM Studio answers it where LM Studio is installed, and where it is not, the
-    person running this is the only one who knows.
-    """
-    match library:
-        case Found(_):
-            return template
-        case Missing(looked):
-            return config.naming_the_library(template, _library(looked, settings))
+    print(f"Recorded in {settings.name}: {config.BUILD} = {number}")
 
 
-def _library(looked: Path, settings: Path) -> Path:
-    """Where the models are, asked for.
-
-    Asked once, here, and written into the file: the alternative is a settings file
-    that every later command refuses for the same reason, which is a worse way of
-    asking the same question.
-    """
-    if not sys.stdin.isatty():
-        raise ConfigError(
-            f"There is no LM Studio library at {looked}, and there is nobody to ask: "
-            "this is not a terminal.\n"
-            f"Copy {workspace.TEMPLATE} to {settings.name} yourself and set "
-            "model_root to the directory the models are under.")
-
-    print(f"There is no LM Studio library at {looked}, so nothing on this machine says "
-          "where the models are.")
-
-    said = _said("Directory the models are under: ")
-    if not said:
-        raise ConfigError("Nothing was said, so nothing was written. Run this again, "
-                          "or copy the template yourself and set model_root.")
-
-    where = Path(said)
-    if not files.exists(where):
-        print(f"  {where} is not there yet -- models will report every file missing "
-              "until it is.")
-
-    return where
-
-
-def _said(question: str) -> str:
-    """One answer, as a person types it.
-
-    Quotes stripped: a path pasted out of Explorer arrives in them, and a directory
-    called "D:\\models" with the quotes in the name is not what anybody meant.
-    """
-    try:
-        return input(question).strip().strip('"')
-    except EOFError:
-        return ""
-
-
-def _would(installed: Sequence[Release], latest: Latest, target: Path) -> None:
-    """What installing would take, with nothing downloaded and nothing written."""
+def _would(installed: Sequence[Release], alike: Sequence[Release], latest: Latest,
+           target: Path, here: bool) -> None:
+    """What installing would take, with nothing downloaded and nothing written. alike
+    is what is installed of the same CUDA version, which is all a runtime is carried
+    over from."""
     print()
+    if here:
+        print(f"{target.name} is already here: would download nothing, and record "
+              f"b{latest.build} as the build to run")
+        return
+
     match installed:
         case (newest, *_):
             print(f"Update available: {newest.name} -> b{latest.build}")
@@ -176,7 +258,7 @@ def _would(installed: Sequence[Release], latest: Latest, target: Path) -> None:
 
     print(f"Would download {latest.binaries.name} ({_megabytes(latest.binaries.size)})")
 
-    match (installed, latest.runtime):
+    match (tuple(alike), latest.runtime):
         case ((), Absent(name)):
             raise Refusal("There would be nothing to carry the CUDA runtime over from, "
                           f"and b{latest.build} carries no {name}.")
@@ -190,12 +272,13 @@ def _would(installed: Sequence[Release], latest: Latest, target: Path) -> None:
             print(f"Would carry the CUDA runtime over from {newest.name} instead of "
                   f"downloading {_megabytes(asset.size)}")
 
-    print(f"Would install into {target}")
+    print(f"Would install into {target}, and record b{latest.build} as the build to run")
 
 
-def _assemble(root: Path, installed: Sequence[Release], latest: Latest,
+def _assemble(root: Path, alike: Sequence[Release], latest: Latest,
               target: Path) -> None:
-    """The release, assembled beside the others and moved in once it verifies."""
+    """The release, assembled beside the others and moved in once it verifies. alike is
+    what is installed of the same CUDA version."""
     staging = root / f".staging-{target.name}"
     temporary = Path(tempfile.gettempdir()) / f"llamacpp-update-{latest.build}"
 
@@ -217,7 +300,7 @@ def _assemble(root: Path, installed: Sequence[Release], latest: Latest,
             raise Refusal(f"The archive carries no {SERVER} where one was expected, so "
                           "nothing was installed.")
 
-        _runtime(staging, root, installed, latest, temporary)
+        _runtime(staging, root, alike, latest, temporary)
 
         print("Verifying ...")
         said = _version(staging / SERVER)
@@ -234,16 +317,17 @@ def _assemble(root: Path, installed: Sequence[Release], latest: Latest,
         files.discard(staging)
 
 
-def _runtime(staging: Path, root: Path, installed: Sequence[Release], latest: Latest,
+def _runtime(staging: Path, root: Path, alike: Sequence[Release], latest: Latest,
              temporary: Path) -> None:
-    """The CUDA runtime: carried over from the release already here, or downloaded.
+    """The CUDA runtime: carried over from a release of the same CUDA version already
+    here, or downloaded.
 
     Carrying it over is the ordinary case and saves nearly four hundred megabytes, the
     runtime being the same file for every release of a CUDA version. It is also what
     makes a release installable whose own runtime archive is not up yet: the binaries
     of a release are published before it.
     """
-    match installed:
+    match tuple(alike):
         case (newest, *_):
             carried = releases.missing(files.named(staging, ".dll"),
                                        files.named(root / newest.name, ".dll"))
@@ -279,14 +363,17 @@ def _flatten(staging: Path) -> None:
             files.remove(staging / only)
 
 
-def _prune(root: Path, keep: int) -> None:
-    """The releases past keeping, removed -- except one a server is running from."""
+def _prune(root: Path, keep: int, runs: str) -> None:
+    """The releases past keeping, removed -- except the one that runs, one a server is
+    running from, and one installed by naming its build, which goes by hand."""
     running = session.executing(SERVER) | session.executing(WORKER)
     installed = releases.releases(files.directories(root))
     serving = {one.name for one in installed
                if str(root / one.name).lower() in running}
+    held = {runs} | {one.name for one in installed
+                     if files.exists(root / one.name / BY_HAND)}
 
-    pruned = releases.prune(installed, keep, serving)
+    pruned = releases.prune(installed, keep, serving, held)
 
     for release in pruned.spared:
         print(f"Keeping {release.name}: a server is running from it.")
@@ -298,37 +385,34 @@ def _prune(root: Path, keep: int) -> None:
         print(f"Removed {release.name} ({_megabytes(freed)})")
 
 
-def _server(root: Path) -> Path:
-    """What the router will run: the server in the newest release unpacked here."""
-    for release in releases.releases(files.directories(root)):
-        server = root / release.name / SERVER
-        if files.exists(server):
-            return server
-
-    raise Refusal(f"no llama.cpp release with {SERVER} under {root}")
-
-
 def _version(server: Path) -> str:
     """What the unpacked server says it is. It says it on the error stream."""
     said = proc.run((str(server), "--version"))
     return said.out + said.err
 
 
-def _answer() -> object:
-    """What the API says has been published.
+def _answer(url: str, absent: str) -> object:
+    """What the API says has been published there.
 
     It is the only source for what a release carries, so a run that cannot reach it
-    installs nothing rather than guessing at the names of the archives.
+    installs nothing rather than guessing at the names of the archives. absent is what
+    to say where it answers that there is nothing there at all.
     """
-    request = urllib.request.Request(upstream.RELEASES_URL, headers=HEADERS)
+    request = urllib.request.Request(url, headers=HEADERS)
 
     try:
         with urllib.request.urlopen(request, timeout=TIMEOUT) as answer:
             return json.loads(answer.read().decode("utf-8"))
+    except urllib.error.HTTPError as refused:
+        if refused.code == NOT_FOUND:
+            raise Refusal(absent) from None
+        raise Refusal(f"{url} did not answer: {refused}\n"
+                      "That is where the published releases are read, so nothing was "
+                      "installed.") from None
     except (urllib.error.URLError, OSError, json.JSONDecodeError) as unreachable:
         raise Refusal(
-            f"{upstream.RELEASES_URL} did not answer: {unreachable}\n"
-            "That is where the published releases are listed, so nothing was "
+            f"{url} did not answer: {unreachable}\n"
+            "That is where the published releases are read, so nothing was "
             "installed.") from None
 
 
