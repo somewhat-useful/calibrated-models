@@ -211,8 +211,7 @@ those are is read from the project's own source at that build's tag,
 update here; where that cannot be read it says so and takes only a build no newer than
 the driver, which runs on any card. Where the newest published does not run here, the
 newest that does is taken, and it says which driver the newest needs. It downloads the
-newest release built for that version and the
-CUDA runtime beside it -- some 550 MB,
+newest release built for that version and the CUDA runtime beside it -- some 550 MB,
 700 MB unpacked -- unpacks it into `.llamacpp\b11070-cuda13.4`, and moves it into place
 only once the server in it reports the build number it was downloaded as. Then it
 records that build in the settings file, as `llamacpp_build = 11070`, and that is the
