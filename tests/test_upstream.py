@@ -11,12 +11,12 @@ first one in the list.
 import unittest
 
 from cm.units import Bytes
+from cm.architectures import Architectures, Compiled, From
 from cm.machine import Attached, Capability, Card, CudaIndex, PciAddress
 from cm.upstream import (Absent, Asset, AsPinned, Cuda, DriverTooOld, HeldBack, Newest,
                          NewestRunnable, NotReady, PinnedHeldBack, Present, Published,
                          Runs, Unavailable, Unpublished, binaries, choose, directory,
-                         finished, flavours, latest, published, runtime, supported,
-                         verdict)
+                         flavours, latest, published, runtime, supported, verdict)
 from cm.units import Mib
 
 CUDA = Cuda(13, 3)
@@ -289,41 +289,55 @@ TURING = card("NVIDIA GeForce RTX 2070", 7, 5, index=1)
 
 BOTH = published([windows(11070, OLD, NEW)])
 
+# What the builds carry finished code for, the way the project's source says it: 8.6
+# always, 8.9 from 11.8, 12.0 from 12.8. Everything else is PTX.
+KNOWN = Architectures(compiled=(
+    Compiled(Capability(8, 6), ()),
+    Compiled(Capability(8, 9), (From(Cuda(11, 8)),)),
+    Compiled(Capability(12, 0), (From(Cuda(12, 8)),)),
+))
+
 
 class ABuildRunsWhereTheDriverRunsItOnEveryCard(unittest.TestCase):
     def test_one_no_newer_than_the_driver_runs_on_any_card(self):
-        self.assertEqual(Runs(), verdict(NEW, NEW, (TURING,)))
-        self.assertEqual(Runs(), verdict(OLD, LAGGING, (TURING,)))
+        self.assertEqual(Runs(), verdict(NEW, NEW, (TURING,), KNOWN))
+        self.assertEqual(Runs(), verdict(OLD, LAGGING, (TURING,), KNOWN))
 
     def test_a_newer_one_of_the_same_major_runs_where_it_has_code_for_every_card(self):
-        self.assertEqual(Runs(), verdict(NEW, LAGGING, (ADA, BLACKWELL)))
+        self.assertEqual(Runs(), verdict(NEW, LAGGING, (ADA, BLACKWELL), KNOWN))
 
     def test_not_where_a_card_has_only_ptx_in_it(self):
-        self.assertEqual(NotReady((TURING,)), verdict(NEW, LAGGING, (BLACKWELL, TURING)))
+        self.assertEqual(NotReady((TURING,)),
+                         verdict(NEW, LAGGING, (BLACKWELL, TURING), KNOWN))
 
     def test_not_on_a_driver_of_an_older_major_version_whatever_the_cards(self):
-        self.assertEqual(DriverTooOld(), verdict(NEW, OLDER_MAJOR, (ADA,)))
+        self.assertEqual(DriverTooOld(), verdict(NEW, OLDER_MAJOR, (ADA,), KNOWN))
 
-    def test_finished_code_follows_what_the_cuda_version_knows(self):
-        self.assertEqual(frozenset({Capability(8, 6), Capability(8, 9)}), finished(OLD))
-        self.assertEqual(frozenset({Capability(8, 6), Capability(8, 9), Capability(12, 0),
-                                    Capability(12, 1)}), finished(NEW))
+    def test_a_card_is_ready_only_from_the_cuda_version_that_compiles_it(self):
+        self.assertEqual(NotReady((BLACKWELL,)),
+                         verdict(Cuda(12, 7), Cuda(12, 4), (BLACKWELL,), KNOWN))
+
+    def test_nothing_known_holds_every_build_to_the_driver(self):
+        nothing = Architectures(compiled=())
+
+        self.assertEqual(NotReady((ADA,)), verdict(NEW, LAGGING, (ADA,), nothing))
+        self.assertEqual(Runs(), verdict(NEW, NEW, (ADA,), nothing))
 
 
 class NothingPinnedTakesTheNewestThatRunsHere(unittest.TestCase):
     def test_the_newest_published_where_it_runs(self):
-        self.assertEqual(Newest(NEW), choose(NewestRunnable(), BOTH, NEW, (TURING,)))
+        self.assertEqual(Newest(NEW), choose(NewestRunnable(), BOTH, NEW, (TURING,), KNOWN))
 
     def test_on_a_lagging_driver_where_every_card_has_finished_code(self):
-        self.assertEqual(Newest(NEW), choose(NewestRunnable(), BOTH, LAGGING, (ADA,)))
+        self.assertEqual(Newest(NEW), choose(NewestRunnable(), BOTH, LAGGING, (ADA,), KNOWN))
 
     def test_held_back_where_a_card_needs_a_newer_driver(self):
         self.assertEqual(HeldBack(NEW, OLD, NotReady((TURING,))),
-                         choose(NewestRunnable(), BOTH, LAGGING, (BLACKWELL, TURING)))
+                         choose(NewestRunnable(), BOTH, LAGGING, (BLACKWELL, TURING), KNOWN))
 
     def test_held_back_where_the_driver_is_of_an_older_major_version(self):
         self.assertEqual(HeldBack(NEW, OLD, DriverTooOld()),
-                         choose(NewestRunnable(), BOTH, OLDER_MAJOR, (ADA,)))
+                         choose(NewestRunnable(), BOTH, OLDER_MAJOR, (ADA,), KNOWN))
 
     def test_a_version_the_newest_release_lacks_is_still_published(self):
         """The project stops building a version from one release to the next, and adds
@@ -331,41 +345,42 @@ class NothingPinnedTakesTheNewestThatRunsHere(unittest.TestCase):
         is."""
         answer = published([windows(10449, BELOW), windows(10448, DRIVER)])
 
-        self.assertEqual(Newest(DRIVER), choose(NewestRunnable(), answer, DRIVER, (TURING,)))
+        self.assertEqual(Newest(DRIVER),
+                         choose(NewestRunnable(), answer, DRIVER, (TURING,), KNOWN))
 
     def test_versions_are_compared_as_numbers(self):
         answer = published([windows(10448, Cuda(13, 4), Cuda(13, 10))])
 
         self.assertEqual(Newest(Cuda(13, 10)),
-                         choose(NewestRunnable(), answer, Cuda(13, 10), (TURING,)))
+                         choose(NewestRunnable(), answer, Cuda(13, 10), (TURING,), KNOWN))
         self.assertEqual(HeldBack(Cuda(13, 10), Cuda(13, 4), NotReady((TURING,))),
-                         choose(NewestRunnable(), answer, Cuda(13, 9), (TURING,)))
+                         choose(NewestRunnable(), answer, Cuda(13, 9), (TURING,), KNOWN))
 
 
 class APinnedVersionIsTakenWhereItRunsAndStoodInForWhereItCannot(unittest.TestCase):
     def test_one_published_that_runs_here_is_taken(self):
-        self.assertEqual(AsPinned(OLD), choose(OLD, BOTH, NEW, (TURING,)))
+        self.assertEqual(AsPinned(OLD), choose(OLD, BOTH, NEW, (TURING,), KNOWN))
 
     def test_one_no_longer_published_is_stood_in_for_and_said(self):
-        self.assertEqual(Unpublished(GONE, NEW), choose(GONE, BOTH, NEW, (TURING,)))
+        self.assertEqual(Unpublished(GONE, NEW), choose(GONE, BOTH, NEW, (TURING,), KNOWN))
 
     def test_one_that_would_not_run_here_is_stood_in_for_and_said(self):
         self.assertEqual(PinnedHeldBack(NEW, OLD, NotReady((TURING,))),
-                         choose(NEW, BOTH, LAGGING, (TURING,)))
+                         choose(NEW, BOTH, LAGGING, (TURING,), KNOWN))
 
     def test_whatever_is_pinned_something_that_runs_here_is_installed(self):
         for pinned in (OLD, NEW, GONE):
             with self.subTest(pinned=pinned):
-                cuda = choose(pinned, BOTH, LAGGING, (TURING,)).cuda
+                cuda = choose(pinned, BOTH, LAGGING, (TURING,), KNOWN).cuda
 
                 self.assertIn(cuda, flavours(BOTH))
-                self.assertEqual(Runs(), verdict(cuda, LAGGING, (TURING,)))
+                self.assertEqual(Runs(), verdict(cuda, LAGGING, (TURING,), KNOWN))
 
 
 class NoVersionToChooseSaysWhy(unittest.TestCase):
     def refused(self, releases, driver, cards) -> str:
         try:
-            choose(NewestRunnable(), releases, driver, cards)
+            choose(NewestRunnable(), releases, driver, cards, KNOWN)
         except Unavailable as refusal:
             return str(refusal)
         raise AssertionError("a version was chosen")

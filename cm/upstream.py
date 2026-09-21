@@ -24,7 +24,9 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from .machine import Attached, Capability
+from .architectures import Architectures, finished
+from .cuda import Cuda
+from .machine import Attached
 from .units import Bytes
 
 REPO = "ggml-org/llama.cpp"
@@ -40,6 +42,11 @@ def tagged(number: int) -> str:
     published."""
     return f"https://api.github.com/repos/{REPO}/releases/tags/b{number}"
 
+
+def source(number: int, path: str) -> str:
+    """Where one file of the project's source is read, as it stood at a build's tag."""
+    return f"https://raw.githubusercontent.com/{REPO}/b{number}/{path}"
+
 # A build's own tag. A release tagged anything else belongs to something other than the
 # per-build stream this installs from.
 _TAG = re.compile(r"^b(\d+)$")
@@ -50,20 +57,6 @@ _BINARIES = re.compile(r"^llama-b(\d+)-bin-win-cuda-(\d+)\.(\d+)-x64\.zip$")
 
 class Unavailable(Exception):
     """Nothing published can be installed, with the one line saying why."""
-
-
-@dataclass(frozen=True, order=True)
-class Cuda:
-    """A CUDA version: what a build was compiled against, what a driver runs, what a
-    settings file pins. The later version is the greater one, 13.10 above 13.4."""
-
-    major: int
-    minor: int
-
-    @property
-    def version(self) -> str:
-        """As the archives spell it: 13.4."""
-        return f"{self.major}.{self.minor}"
 
 
 @dataclass(frozen=True)
@@ -290,7 +283,7 @@ def supported(encoded: int) -> Cuda:
 
 
 def choose(wanted: Wanted, releases: Sequence[Published], driver: Cuda,
-           cards: Sequence[Attached]) -> Choice:
+           cards: Sequence[Attached], known: Architectures) -> Choice:
     """Which CUDA version to install a release for: the newest published that runs on
     this driver and every card here.
 
@@ -305,17 +298,17 @@ def choose(wanted: Wanted, releases: Sequence[Published], driver: Cuda,
     """
     published = flavours(releases)
     running = tuple(one for one in published
-                    if isinstance(verdict(one, driver, cards), Runs))
+                    if isinstance(verdict(one, driver, cards, known), Runs))
 
     match running:
         case ():
-            raise Unavailable(_nothing_runs(published, driver, cards, releases))
+            raise Unavailable(_nothing_runs(published, driver, cards, known, releases))
         case (newest, *_):
             pass
 
     match wanted:
         case NewestRunnable():
-            match verdict(published[0], driver, cards):
+            match verdict(published[0], driver, cards, known):
                 case Runs():
                     return Newest(newest)
                 case DriverTooOld() | NotReady() as why:
@@ -323,14 +316,15 @@ def choose(wanted: Wanted, releases: Sequence[Published], driver: Cuda,
         case Cuda() as pinned if pinned not in published:
             return Unpublished(pinned, newest)
         case Cuda() as pinned:
-            match verdict(pinned, driver, cards):
+            match verdict(pinned, driver, cards, known):
                 case Runs():
                     return AsPinned(pinned)
                 case DriverTooOld() | NotReady() as why:
                     return PinnedHeldBack(pinned, newest, why)
 
 
-def verdict(build: Cuda, driver: Cuda, cards: Sequence[Attached]) -> Verdict:
+def verdict(build: Cuda, driver: Cuda, cards: Sequence[Attached],
+            known: Architectures) -> Verdict:
     """Whether a build for this CUDA version runs on this driver, on every card here.
 
     NVIDIA's CUDA Compatibility guide: a driver runs a build for its own CUDA version or
@@ -344,28 +338,9 @@ def verdict(build: Cuda, driver: Cuda, cards: Sequence[Attached]) -> Verdict:
     if build.major > driver.major:
         return DriverTooOld()
 
-    lacking = tuple(one for one in cards if one.capability not in finished(build))
+    lacking = tuple(one for one in cards
+                    if one.capability not in finished(build, known))
     return NotReady(lacking) if lacking else Runs()
-
-
-def finished(build: Cuda) -> frozenset[Capability]:
-    """The cards a published build carries finished code for, by compute capability.
-
-    The Windows builds name no architectures of their own and take ggml's defaults, in
-    ggml/src/ggml-cuda/CMakeLists.txt: finished code for 8.6 and 8.9 -- RTX 3000 and
-    4000 -- and for 12.0 and 12.1 from the CUDA versions that know Blackwell. Every other
-    card, an RTX 2070 at 7.5 among them, gets PTX. Written out here because nothing a
-    release publishes says it; where ggml changes that list, this has to follow.
-    """
-    found = {Capability(8, 6)}
-    if build >= Cuda(11, 8):
-        found.add(Capability(8, 9))
-    if build >= Cuda(12, 8):
-        found.add(Capability(12, 0))
-    if build >= Cuda(12, 9):
-        found.add(Capability(12, 1))
-
-    return frozenset(found)
 
 
 def hindered(why: Hindrance, build: Cuda, driver: Cuda) -> str:
@@ -395,11 +370,11 @@ def flavours(releases: Sequence[Published]) -> tuple[Cuda, ...]:
 
 
 def _nothing_runs(published: Sequence[Cuda], driver: Cuda, cards: Sequence[Attached],
-                  releases: Sequence[Published]) -> str:
+                  known: Architectures, releases: Sequence[Published]) -> str:
     """Why no version can be chosen: none is published, or none runs here."""
     match published:
         case (newest, *_):
-            match verdict(newest, driver, cards):
+            match verdict(newest, driver, cards, known):
                 case DriverTooOld() | NotReady() as why:
                     return (f"Nothing published lately runs here. The newest, CUDA "
                             f"{newest.version}, {hindered(why, newest, driver)}.\n"

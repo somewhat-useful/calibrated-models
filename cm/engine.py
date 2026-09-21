@@ -22,7 +22,9 @@ import urllib.request
 from collections.abc import Sequence
 from pathlib import Path
 
-from . import config, devices, files, proc, releases, session, upstream, workspace
+from . import (architectures, config, devices, files, proc, releases, session, upstream,
+               workspace)
+from .architectures import Architectures, Unread
 from .config import ConfigError
 from .refusal import Refusal
 from .releases import Recorded, Release, Running, Unrecorded
@@ -76,7 +78,8 @@ def install(settings: Path, asked: Asked, check: bool, force: bool) -> None:
               f"{one.capability.major}.{one.capability.minor}")
 
     published = _published(asked)
-    choice = upstream.choose(read.cuda, published, driver.cuda, cards)
+    known = _architectures(published)
+    choice = upstream.choose(read.cuda, published, driver.cuda, cards, known)
     cuda = choice.cuda
     print(_chosen(choice, driver.cuda))
 
@@ -130,6 +133,47 @@ def _published(asked: Asked) -> tuple[Published, ...]:
                          absent=f"No llama.cpp release is tagged b{number}. The "
                                 "published ones are at "
                                 f"https://github.com/{upstream.REPO}/releases")])
+
+
+def _architectures(published: Sequence[Published]) -> Architectures:
+    """Which cards the newest of these builds carries finished code for, as its own
+    source says.
+
+    Where that cannot be read -- the source moved, the network did not answer -- it is
+    said, and nothing is taken as finished: every build is then held to what the driver
+    runs on any card, which is true whatever a build carries.
+    """
+    match published:
+        case ():
+            return architectures.NOTHING_KNOWN
+        case (newest, *_):
+            pass
+
+    try:
+        said = architectures.read(_source(newest.build, architectures.SOURCE),
+                                  _source(newest.build, architectures.WORKFLOW))
+    except Refusal as unanswered:
+        said = Unread(str(unanswered))
+
+    match said:
+        case Architectures() as known:
+            return known
+        case Unread(why):
+            print(f"Which cards b{newest.build} carries finished code for could not be "
+                  f"read: {why}. Only a build no newer than the driver is taken.")
+            return architectures.NOTHING_KNOWN
+
+
+def _source(build: int, path: str) -> str:
+    """One file of the project's source, as it stood at this build's tag."""
+    url = upstream.source(build, path)
+    request = urllib.request.Request(url, headers=HEADERS)
+
+    try:
+        with urllib.request.urlopen(request, timeout=TIMEOUT) as answer:
+            return answer.read().decode("utf-8")
+    except (urllib.error.URLError, OSError, UnicodeDecodeError) as unreachable:
+        raise Refusal(f"{url} did not answer: {unreachable}") from None
 
 
 def _runs(build: Running) -> str:

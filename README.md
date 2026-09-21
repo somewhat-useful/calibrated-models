@@ -205,9 +205,12 @@ there are, reads which CUDA versions the project builds for Windows, and takes t
 of those that runs here. A driver runs a build for its own CUDA version or an older one;
 one of the same major version runs a newer build as well, on the cards the build carries
 finished code for -- RTX 3000, 4000 and 5000 -- but not on the ones it carries only PTX
-for, such as an RTX 2070, which need a driver at least as new as the build. Where the
-newest published does not run here, the newest that does is taken, and it says which
-driver the newest needs. It downloads the newest release built for that version and the
+for, such as an RTX 2070, which need a driver at least as new as the build. Which cards
+those are is read from the project's own source at that build's tag,
+`ggml/src/ggml-cuda/CMakeLists.txt`, so a card the project adds is known without an
+update here; where that cannot be read it says so and takes only a build no newer than
+the driver, which runs on any card. Where the newest published does not run here, the
+newest that does is taken, and it says which driver the newest needs. It downloads the newest release built for that version and the
 CUDA runtime beside it -- some 550 MB,
 700 MB unpacked -- unpacks it into `.llamacpp\b11070-cuda13.4`, and moves it into place
 only once the server in it reports the build number it was downloaded as. Then it
@@ -669,6 +672,7 @@ command that deals with it. The ones worth knowing in advance:
 |---|---|
 | `settings.toml not found at ...` | you are not in the directory the settings file is in, or `install llamacpp` has not run to make one |
 | `model_root is not set and there is no LM Studio library at ...` | uncomment `model_root` and name the directory the weights are under |
+| `Which cards b... carries finished code for could not be read` | the project's source at that tag is not where it was, or reads differently. Nothing breaks: only a build no newer than the driver is taken until this is revisited |
 | `Nothing published lately runs here` | the NVIDIA driver is too old for anything the project builds for Windows now, on one of the cards it names. Update it |
 | `No release carries a Windows CUDA archive` | the project has renamed its archives, and this needs revisiting. It prints the newest tags it saw |
 | `No llama.cpp release under ... carries llama-server.exe` | step 1 has not happened: nothing is unpacked in `.llamacpp` yet |
