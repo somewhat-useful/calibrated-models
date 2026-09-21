@@ -21,11 +21,11 @@
 # model_root = 'C:\models'
 
 # Which CUDA build of a release to install. The project publishes one archive per CUDA
-# version -- llama-b10448-bin-win-cuda-13.3-x64.zip -- and install picks between them by
-# this, so it has to be one the project still builds and one this machine's driver
-# supports. In quotes: unquoted it is a number, and 13.30 is the same number as 13.3 and
-# a different archive.
-# cuda_version = '13.3'
+# version -- llama-b11070-bin-win-cuda-13.4-x64.zip -- and left out, install takes the
+# newest version it publishes that this machine's driver runs. Named, install keeps to it
+# for as long as it is published and the driver runs it, and says so when it has to take
+# another. In quotes, the way the archives spell it.
+# cuda_version = '13.4'
 
 # How many unpacked releases to keep when install unpacks a newer one. Two leaves the
 # one that was running to fall back to; the rest are removed, at some 670 MB each. A

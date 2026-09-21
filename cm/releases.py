@@ -13,6 +13,8 @@ import re
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 
+from .upstream import Cuda, directory
+
 _NAME = re.compile(r"^b(\d+)(-.+)?$")
 
 
@@ -69,6 +71,17 @@ def prune(installed: Sequence[Release], keep: int, running: Collection[str]) -> 
 
     return Pruned(remove=tuple(one for one in older if one.name not in running),
                   spared=tuple(one for one in older if one.name in running))
+
+
+def built_against(installed: Sequence[Release], cuda: Cuda) -> tuple[Release, ...]:
+    """The releases here built against this CUDA version, newest first.
+
+    The runtime is carried over only from one of them. Its libraries are named for the
+    major version alone -- cudart64_13.dll under 13.3 and 13.4 both -- so a runtime taken
+    from a release of another version would be copied in without a word and run under a
+    build it was not shipped with.
+    """
+    return tuple(one for one in installed if one.name == directory(one.number, cuda))
 
 
 def missing(present: Collection[str], previous: Collection[str]) -> tuple[str, ...]:

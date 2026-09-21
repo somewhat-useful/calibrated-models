@@ -144,6 +144,17 @@ class AFileThatCannotBeActedOnSaysWhy(unittest.TestCase):
 
                 self.assertEqual(key + " must be a whole number", refused(text))
 
+    def test_a_cuda_version_not_spelled_the_way_the_archives_spell_one(self):
+        for written in ("13", "13.4.1", "v13.4", "13.x"):
+            with self.subTest(written=written):
+                text = BARE.replace(
+                    "[models", f"cuda_version = '{written}'\n\n[models")
+
+                self.assertEqual(
+                    f"cuda_version is '{written}'; write it the way the archives name "
+                    "the version, as '13.4'",
+                    refused(text))
+
     def test_a_cuda_version_that_is_not_written_as_one(self):
         """13.3 unquoted is a number, and 13.30 is the same number and another
         directory name. The archives are named with the text, so the text is asked
@@ -319,7 +330,7 @@ class WhatTheFileSaysIsWhatComesOut(unittest.TestCase):
         given = parse(WHOLE)
 
         self.assertEqual(MODELS, given.model_root)
-        self.assertEqual(Cuda("12.4"), given.cuda)
+        self.assertEqual(Cuda(12, 4), given.cuda)
         self.assertEqual(3, given.keep_releases)
         self.assertEqual(PRESET, given.preset_path)
         self.assertEqual(Mib(900), given.reserve)
@@ -471,7 +482,7 @@ class WhereTheModelsAreCanBeWrittenIntoTheFile(unittest.TestCase):
     def test_nothing_else_in_the_file_is_touched(self):
         given = self.written(WHOLE)
 
-        self.assertEqual(Cuda("12.4"), given.cuda)
+        self.assertEqual(Cuda(12, 4), given.cuda)
         self.assertEqual(18099, given.serving.port)
         self.assertEqual(("qwen3.8",), tuple(one.key for one in given.models))
 

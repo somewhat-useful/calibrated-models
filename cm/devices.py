@@ -20,6 +20,7 @@ from .machine import (CARD_FIELDS, Attached, Core, CudaIndex, Installed, Machine
 from .nonempty import NonEmpty
 from .proc import run
 from .units import Mib
+from .upstream import Cuda, supported
 
 # GetLogicalProcessorInformationEx, RelationProcessorCore: one record per physical core.
 RELATION_PROCESSOR_CORE = 0
@@ -142,6 +143,32 @@ def _ram() -> Mib:
                                "machine has")
 
     return Mib(status.total_phys // 1048576)
+
+
+def cuda_driver() -> Cuda:
+    """The newest CUDA version this machine's driver runs, as the driver itself says.
+
+    Asked of the driver library through cuDriverGetVersion rather than read off
+    nvidia-smi: nvidia-smi prints the same figure only in its report, under a label it
+    has already renamed once and says it will drop in CUDA 14.
+    """
+    if sys.platform != "win32":
+        raise UnreadableDevice(
+            f"reading this machine is implemented for Windows only, not {sys.platform}")
+
+    try:
+        driver = ctypes.WinDLL("nvcuda.dll")
+    except OSError as absent:
+        raise UnreadableDevice("there is no NVIDIA driver here to say which CUDA version "
+                               f"it runs: {absent}") from None
+
+    encoded = ctypes.c_int()
+    status = driver.cuDriverGetVersion(ctypes.byref(encoded))
+    if status != 0:
+        raise UnreadableDevice(f"cuDriverGetVersion would not say which CUDA version the "
+                               f"driver runs: it answered {status}")
+
+    return supported(encoded.value)
 
 
 def _cores() -> tuple[Core, ...]:

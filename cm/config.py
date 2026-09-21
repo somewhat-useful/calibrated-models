@@ -25,7 +25,7 @@ from .recommended import Advised, Recommended, Setting, Unknown
 from .serving import (DEFAULT_HOST, DEFAULT_IDLE, DEFAULT_PORT, DEFAULT_RESIDENT, LOGS,
                       Serving)
 from .units import Mib, Port, Seconds, Tokens
-from .upstream import Cuda
+from .upstream import Cuda, NewestRunnable, Wanted
 from .workspace import RECOMMENDED
 
 # What a value may be in a preset file. A router flag is a word, a number or a switch.
@@ -69,11 +69,14 @@ FLAGS = frozenset({HIDDEN.name, MANUAL.name})
 
 DEFAULT_PRESET = "llamacpp.models.ini"
 
-# Which CUDA build of a release to install, and how many releases to keep once a newer
-# one is unpacked. Two leaves the one that was running to fall back to; older ones are
-# some 670 MB each.
-DEFAULT_CUDA = Cuda("13.3")
+# Which CUDA build of a release to install where the settings file pins none, and how
+# many releases to keep once a newer one is unpacked. Two leaves the one that was running
+# to fall back to; older ones are some 670 MB each.
+DEFAULT_CUDA = NewestRunnable()
 DEFAULT_KEPT = 2
+
+# How cuda_version is written: the way the archives name the version, 13.4.
+_CUDA = re.compile(r"(\d+)\.(\d+)")
 
 
 class ConfigError(Exception):
@@ -122,7 +125,7 @@ class Config:
     """The settings file, read."""
 
     model_root: Path
-    cuda: Cuda
+    cuda: Wanted
     keep_releases: int
     preset_path: Path
     serving: Serving
@@ -171,7 +174,7 @@ def parse(text: str, library: Library) -> Config:
 
     return Config(
         model_root=model_root,
-        cuda=Cuda(_text(raw, "cuda_version", DEFAULT_CUDA.version)),
+        cuda=_cuda(raw),
         keep_releases=_whole(raw, "keep_releases", DEFAULT_KEPT),
         preset_path=Path(str(raw.get("preset_path", DEFAULT_PRESET))),
         serving=_serving(raw),
@@ -196,7 +199,7 @@ class Lending:
     """What a machine lending its card reads from its settings file: which releases it
     installs and keeps, and where its worker writes."""
 
-    cuda: Cuda
+    cuda: Wanted
     keep_releases: int
     logs: Path
 
@@ -209,7 +212,7 @@ def lending(text: str) -> Lending:
     """
     raw = tomllib.loads(text)
 
-    return Lending(cuda=Cuda(_text(raw, "cuda_version", DEFAULT_CUDA.version)),
+    return Lending(cuda=_cuda(raw),
                    keep_releases=_whole(raw, "keep_releases", DEFAULT_KEPT),
                    logs=_logs(raw))
 
@@ -828,6 +831,20 @@ def _count(shared: Mapping[str, Value], key: str, fallback: int) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise ConfigError(f"shared: {key} must be a whole number above zero")
     return value
+
+
+def _cuda(raw: Mapping[str, object]) -> Wanted:
+    """The CUDA version cuda_version pins, or none where the file does not name one."""
+    if "cuda_version" not in raw:
+        return DEFAULT_CUDA
+
+    written = _text(raw, "cuda_version", "")
+    named = _CUDA.fullmatch(written)
+    if named is None:
+        raise ConfigError(f"cuda_version is {written!r}; write it the way the archives "
+                          "name the version, as '13.4'")
+
+    return Cuda(int(named[1]), int(named[2]))
 
 
 def _text(raw: Mapping[str, object], key: str, fallback: str) -> str:

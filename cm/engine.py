@@ -29,7 +29,8 @@ from .releases import Release
 from .rpc import WORKER
 from .serving import SERVER
 from .units import Bytes
-from .upstream import Absent, Asset, Cuda, Latest, Present
+from .upstream import (Absent, AsPinned, Asset, BeyondDriver, Choice, Cuda, Latest,
+                       Newest, Present, Unpublished, Wanted)
 
 # GitHub asks every caller to say what it is, and turns away one that does not.
 HEADERS = {"User-Agent": "llamacpp-local-updater"}
@@ -42,7 +43,8 @@ _MEGABYTE = 1048576
 
 
 def install(settings: Path, check: bool, force: bool) -> None:
-    """The newest release published for this machine's CUDA version, put here."""
+    """The newest release published for the CUDA version chosen for this machine, put
+    here."""
     _settings(settings)
 
     read = reading.read(settings)
@@ -50,17 +52,23 @@ def install(settings: Path, check: bool, force: bool) -> None:
             then="Restart the router to run on it: python -m cm.router start")
 
 
-def release(cuda: Cuda, keep: int, check: bool, force: bool, then: str) -> None:
-    """The newest release published for this CUDA version, put here, and the ones past
-    keeping removed. `then` is what to do once a new one is in, which depends on what
-    this machine runs from it."""
+def release(wanted: Wanted, keep: int, check: bool, force: bool, then: str) -> None:
+    """The newest release published for the CUDA version this machine takes, put here,
+    and the ones past keeping removed. `then` is what to do once a new one is in, which
+    depends on what this machine runs from it."""
     root = workspace.engines()
 
     installed = releases.releases(files.directories(root))
-    print(f"llama.cpp under {root}, CUDA {cuda.version}")
+    print(f"llama.cpp under {root}")
     print("Installed: " + (", ".join(one.name for one in installed) or "none"))
 
-    latest = upstream.latest(upstream.published(_answer()), cuda)
+    published = upstream.published(_answer())
+    driver = devices.cuda_driver()
+    choice = upstream.choose(wanted, published, driver)
+    cuda = choice.cuda
+    print(_chosen(choice, driver))
+
+    latest = upstream.latest(published, cuda)
     if latest.incomplete:
         print("Skipped (archive not uploaded yet): "
               + ", ".join(f"b{build}" for build in latest.incomplete))
@@ -71,18 +79,35 @@ def release(cuda: Cuda, keep: int, check: bool, force: bool, then: str) -> None:
         return
 
     target = root / upstream.directory(latest.build, cuda)
+    alike = releases.built_against(installed, cuda)
 
     if check:
-        _would(installed, latest, target)
+        _would(installed, alike, latest, target)
         return
 
     files.ensure(root)
-    _assemble(root, installed, latest, target)
+    _assemble(root, alike, latest, target)
     _prune(root, keep)
 
     print()
     print(f"Now running: {_server(root)}")
     print(then)
+
+
+def _chosen(choice: Choice, driver: Cuda) -> str:
+    """Which CUDA version the release is for, and why that one."""
+    match choice:
+        case Newest(cuda):
+            return (f"CUDA {cuda.version}: the newest published that this driver runs "
+                    f"(it runs {driver.version})")
+        case AsPinned(cuda):
+            return f"CUDA {cuda.version}: as cuda_version pins it"
+        case Unpublished(pinned, cuda):
+            return (f"CUDA {cuda.version}: cuda_version pins {pinned.version}, which no "
+                    "release is built for lately, so the newest this driver runs instead")
+        case BeyondDriver(pinned, cuda):
+            return (f"CUDA {cuda.version}: cuda_version pins {pinned.version}, and this "
+                    f"driver runs {driver.version} at most, so the newest it runs instead")
 
 
 def _settings(settings: Path) -> None:
@@ -165,8 +190,11 @@ def _said(question: str) -> str:
         return ""
 
 
-def _would(installed: Sequence[Release], latest: Latest, target: Path) -> None:
-    """What installing would take, with nothing downloaded and nothing written."""
+def _would(installed: Sequence[Release], alike: Sequence[Release], latest: Latest,
+           target: Path) -> None:
+    """What installing would take, with nothing downloaded and nothing written. alike
+    is what is installed of the same CUDA version, which is all a runtime is carried
+    over from."""
     print()
     match installed:
         case (newest, *_):
@@ -176,7 +204,7 @@ def _would(installed: Sequence[Release], latest: Latest, target: Path) -> None:
 
     print(f"Would download {latest.binaries.name} ({_megabytes(latest.binaries.size)})")
 
-    match (installed, latest.runtime):
+    match (tuple(alike), latest.runtime):
         case ((), Absent(name)):
             raise Refusal("There would be nothing to carry the CUDA runtime over from, "
                           f"and b{latest.build} carries no {name}.")
@@ -193,9 +221,10 @@ def _would(installed: Sequence[Release], latest: Latest, target: Path) -> None:
     print(f"Would install into {target}")
 
 
-def _assemble(root: Path, installed: Sequence[Release], latest: Latest,
+def _assemble(root: Path, alike: Sequence[Release], latest: Latest,
               target: Path) -> None:
-    """The release, assembled beside the others and moved in once it verifies."""
+    """The release, assembled beside the others and moved in once it verifies. alike is
+    what is installed of the same CUDA version."""
     staging = root / f".staging-{target.name}"
     temporary = Path(tempfile.gettempdir()) / f"llamacpp-update-{latest.build}"
 
@@ -217,7 +246,7 @@ def _assemble(root: Path, installed: Sequence[Release], latest: Latest,
             raise Refusal(f"The archive carries no {SERVER} where one was expected, so "
                           "nothing was installed.")
 
-        _runtime(staging, root, installed, latest, temporary)
+        _runtime(staging, root, alike, latest, temporary)
 
         print("Verifying ...")
         said = _version(staging / SERVER)
@@ -234,16 +263,17 @@ def _assemble(root: Path, installed: Sequence[Release], latest: Latest,
         files.discard(staging)
 
 
-def _runtime(staging: Path, root: Path, installed: Sequence[Release], latest: Latest,
+def _runtime(staging: Path, root: Path, alike: Sequence[Release], latest: Latest,
              temporary: Path) -> None:
-    """The CUDA runtime: carried over from the release already here, or downloaded.
+    """The CUDA runtime: carried over from a release of the same CUDA version already
+    here, or downloaded.
 
     Carrying it over is the ordinary case and saves nearly four hundred megabytes, the
     runtime being the same file for every release of a CUDA version. It is also what
     makes a release installable whose own runtime archive is not up yet: the binaries
     of a release are published before it.
     """
-    match installed:
+    match tuple(alike):
         case (newest, *_):
             carried = releases.missing(files.named(staging, ".dll"),
                                        files.named(root / newest.name, ".dll"))

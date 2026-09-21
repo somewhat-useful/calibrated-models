@@ -2,7 +2,12 @@
 
 A release carries some thirty files -- the Windows binaries for every CUDA version
 built, the CUDA runtime beside them, the archives for the other systems, the sources.
-Two of them are read here, both named after the CUDA version this machine runs.
+Two of them are installed, both named after the CUDA version chosen for this machine.
+
+Which CUDA version that is, is not written down anywhere as a constant. The project
+moves its builds from one version to the next and stops publishing the old one, so a
+version fixed here would stop installing anything the day it moved. What is published
+is read instead, and the newest of it this machine's driver runs is taken.
 
 Which release to install is not simply the newest published. The assets of a release
 appear over several minutes, so the newest tag frequently exists with the Windows
@@ -31,16 +36,72 @@ RELEASES_URL = f"https://api.github.com/repos/{REPO}/releases?per_page=30"
 # per-build stream this installs from.
 _TAG = re.compile(r"^b(\d+)$")
 
+# The Windows archive of a build, and the CUDA version it was built against.
+_BINARIES = re.compile(r"^llama-b(\d+)-bin-win-cuda-(\d+)\.(\d+)-x64\.zip$")
+
 
 class Unavailable(Exception):
     """Nothing published can be installed, with the one line saying why."""
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, order=True)
 class Cuda:
-    """The CUDA version the binaries were built against, as the archives spell it."""
+    """A CUDA version: what a build was compiled against, what a driver runs, what a
+    settings file pins. The later version is the greater one, 13.10 above 13.4."""
 
-    version: str
+    major: int
+    minor: int
+
+    @property
+    def version(self) -> str:
+        """As the archives spell it: 13.4."""
+        return f"{self.major}.{self.minor}"
+
+
+@dataclass(frozen=True)
+class NewestRunnable:
+    """No CUDA version pinned: the newest one published that this machine's driver
+    runs."""
+
+
+# What a settings file asks for with cuda_version, or without it.
+Wanted = Cuda | NewestRunnable
+
+
+@dataclass(frozen=True)
+class AsPinned:
+    """The version the settings file pins, published and within what the driver runs."""
+
+    cuda: Cuda
+
+
+@dataclass(frozen=True)
+class Newest:
+    """Nothing pinned, and this the newest version published that the driver runs."""
+
+    cuda: Cuda
+
+
+@dataclass(frozen=True)
+class Unpublished:
+    """The pinned version is not among the builds published lately, and this, the
+    newest the driver runs, stands in for it."""
+
+    pinned: Cuda
+    cuda: Cuda
+
+
+@dataclass(frozen=True)
+class BeyondDriver:
+    """The pinned version is newer than the driver runs, and this, the newest it does
+    run, stands in for it."""
+
+    pinned: Cuda
+    cuda: Cuda
+
+
+# Which CUDA version the release installed is built against, and why that one.
+Choice = AsPinned | Newest | Unpublished | BeyondDriver
 
 
 @dataclass(frozen=True)
@@ -147,6 +208,76 @@ def published(answer: object) -> tuple[Published, ...]:
                                assets=_assets(entry.get("assets"))))
 
     return tuple(sorted(found, key=lambda one: one.build, reverse=True))
+
+
+def supported(encoded: int) -> Cuda:
+    """What cuDriverGetVersion answers, as a version: 1000 * major + 10 * minor, so 13040
+    is 13.4."""
+    return Cuda(encoded // 1000, encoded % 1000 // 10)
+
+
+def choose(wanted: Wanted, releases: Sequence[Published], driver: Cuda) -> Choice:
+    """Which CUDA version to install a release for.
+
+    Never one newer than the driver runs. A build compiled against a later CUDA than the
+    driver supports may or may not start, depending on what it calls; this does not bet
+    a machine on which.
+
+    A pinned version is taken where it is published and the driver runs it. Where it is
+    not, the newest the driver does run is taken instead and the choice says what it
+    stands in for: the pin is for keeping machines alike -- a slave and the router
+    running the same flavour -- and a machine that installs nothing because the project
+    stopped building that flavour is worse off than one running the next.
+    """
+    published = flavours(releases)
+    runnable = tuple(one for one in published if one <= driver)
+
+    match runnable:
+        case ():
+            raise Unavailable(_nothing_runs(published, driver, releases))
+        case (newest, *_):
+            pass
+
+    match wanted:
+        case NewestRunnable():
+            return Newest(newest)
+        case Cuda() as pinned if pinned not in published:
+            return Unpublished(pinned, newest)
+        case Cuda() as pinned if pinned > driver:
+            return BeyondDriver(pinned, newest)
+        case Cuda() as pinned:
+            return AsPinned(pinned)
+
+
+def flavours(releases: Sequence[Published]) -> tuple[Cuda, ...]:
+    """Every CUDA version a Windows build was published for, the newest first."""
+    found = set()
+    for release in releases:
+        for asset in release.assets:
+            named = _BINARIES.match(asset.name)
+            if named is not None and int(named[1]) == release.build:
+                found.add(Cuda(int(named[2]), int(named[3])))
+
+    return tuple(sorted(found, reverse=True))
+
+
+def _nothing_runs(published: Sequence[Cuda], driver: Cuda,
+                  releases: Sequence[Published]) -> str:
+    """Why no version can be chosen: none is published, or none this driver runs."""
+    if published:
+        return (f"This driver runs CUDA {driver.version} at most, and every Windows build "
+                "published lately needs a newer one: "
+                f"{', '.join(one.version for one in published)}.\n"
+                "Update the NVIDIA driver, and run this again.")
+
+    seen = ", ".join(f"b{one.build}" for one in releases[:5]) or "none"
+    return ("No release carries a Windows CUDA archive, "
+            "llama-b<number>-bin-win-cuda-<version>-x64.zip.\n"
+            "\n"
+            f"Newest tags seen: {seen}\n"
+            "\n"
+            "The release naming has changed and this needs revisiting. The published "
+            f"archives are at https://github.com/{REPO}/releases")
 
 
 def latest(releases: Sequence[Published], cuda: Cuda) -> Latest:

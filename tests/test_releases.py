@@ -8,8 +8,9 @@ moment it would be deleted.
 
 import unittest
 
-from cm.releases import (Pruned, Release, current, missing, prune, releases,
-                         verifies)
+from cm.releases import (Pruned, Release, built_against, current, missing, prune,
+                         releases, verifies)
+from cm.upstream import Cuda
 
 
 class AReleaseIsPickedByItsNumber(unittest.TestCase):
@@ -158,6 +159,23 @@ class AReleaseIsVerifiedBeforeItIsMovedIntoPlace(unittest.TestCase):
         """What a half-extracted archive leaves: an executable that will not run."""
         self.assertFalse(verifies("", 10448))
 
+
+class TheRuntimeIsCarriedOverOnlyFromAReleaseOfTheSameCuda(unittest.TestCase):
+    """Its libraries carry the major version alone, so nothing in the files themselves
+    tells a 13.3 runtime from a 13.4 one."""
+
+    HERE = releases(("b11070-cuda13.4", "b10976-cuda13.3", "b10448", "b10900-cuda13.30"))
+
+    def test_only_the_releases_built_against_that_version(self):
+        self.assertEqual(["b11070-cuda13.4"],
+                         [one.name for one in built_against(self.HERE, Cuda(13, 4))])
+
+    def test_a_version_is_not_read_as_the_opening_of_another(self):
+        self.assertEqual(["b10976-cuda13.3"],
+                         [one.name for one in built_against(self.HERE, Cuda(13, 3))])
+
+    def test_none_where_nothing_here_was_built_against_it(self):
+        self.assertEqual((), built_against(self.HERE, Cuda(12, 4)))
 
 if __name__ == "__main__":
     unittest.main()

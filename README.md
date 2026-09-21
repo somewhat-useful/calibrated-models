@@ -195,18 +195,22 @@ beside it, and says so. Nothing in that copy has to be edited before the downloa
 is what lets one command do both: the releases go into `.llamacpp` in this directory
 whatever the file says, and every other key has a default or is asked for.
 
-Then it downloads the newest release published for `cuda_version` and the CUDA runtime
-beside it -- some 515 MB, 670 MB unpacked -- unpacks it into
-`.llamacpp\b10754-cuda13.3`, and moves it into place only once the server in it reports
-the build number it was downloaded as. `--check` first says what it would do and
-downloads nothing.
+Then it asks the NVIDIA driver which CUDA version it runs, reads which CUDA versions the
+project builds for Windows, and takes the newest of those the driver runs. It downloads
+the newest release built for that version and the CUDA runtime beside it -- some 550 MB,
+700 MB unpacked -- unpacks it into `.llamacpp\b11070-cuda13.4`, and moves it into place
+only once the server in it reports the build number it was downloaded as. `--check`
+first says what it would do and downloads nothing.
 
 Two keys in that copy are worth a look before the download rather than after.
 
-`cuda_version` picks between the archives the project publishes -- one per CUDA version
--- so it has to be one this machine's driver supports. `nvidia-smi` prints the highest it
-supports in its top right corner; take that or lower, and quote it, because `13.30`
-unquoted is the same number as `13.3` and a different archive. The default is `13.3`.
+`cuda_version` is left out unless a machine has to stay on one CUDA version -- a slave
+and the router kept alike, say. Left out, the version follows the project: it moves its
+builds from one CUDA version to the next and stops publishing the old one, and `install`
+moves with it, never past what the driver runs. Named, that version is taken while the
+project publishes it and the driver runs it; where either stops being true, `install`
+takes the newest the driver runs instead and says what it stood in for, rather than
+installing nothing. Write it the way the archives do, in quotes: `'13.4'`.
 
 `model_root` is the directory the weights sit under. Left commented out it falls back to
 LM Studio's library, since that is where these files land anyway and LM Studio records
@@ -636,7 +640,8 @@ command that deals with it. The ones worth knowing in advance:
 |---|---|
 | `settings.toml not found at ...` | you are not in the directory the settings file is in, or `install llamacpp` has not run to make one |
 | `model_root is not set and there is no LM Studio library at ...` | uncomment `model_root` and name the directory the weights are under |
-| `No release carries llama-b<number>-bin-win-cuda-<version>-x64.zip` | `cuda_version` names a flavour the project no longer builds. It prints the newest tags it saw |
+| `This driver runs CUDA ... at most, and every Windows build published lately needs a newer one` | the NVIDIA driver is older than anything the project builds for Windows now. Update it |
+| `No release carries a Windows CUDA archive` | the project has renamed its archives, and this needs revisiting. It prints the newest tags it saw |
 | `No llama.cpp release under ... carries llama-server.exe` | step 1 has not happened: nothing is unpacked in `.llamacpp` yet |
 | `No llama.cpp release under ... carries ggml-rpc-server.exe` | on a machine lending its card: `install slave` has not run there yet |
 | `The preset the router reads was not found: ...` | `calibrate` has not run since the settings file changed |
@@ -655,10 +660,11 @@ none, and nothing writes it after that. It holds three kinds of thing:
 **Where things are.** `model_root`, and `preset_path` — the file `calibrate` writes.
 Where llama.cpp is is not among them: the releases are in `.llamacpp` beside this file.
 
-**Which llama.cpp.** `cuda_version` picks between the archives the project publishes for
-each CUDA version, and `keep_releases` says how many unpacked releases to keep when
-`install llamacpp` installs a newer one. Both have a default — `13.3` and two —
-and the file only has to name them to say something else.
+**Which llama.cpp.** `cuda_version` pins the CUDA version of the archives
+`install llamacpp` takes, where it would otherwise take the newest the driver runs, and
+`keep_releases` says how many unpacked releases to keep when it installs a newer one.
+Neither has to be named: without them the version follows the project and the driver,
+and two releases are kept.
 
 **How the router runs.** `listen_host` and `port` are what it binds, `models_max` how
 many models may be resident at once, `sleep_idle_seconds` how long an idle one is kept

@@ -145,7 +145,7 @@ class ASlaveReadsOnlyWhatItNeeds(unittest.TestCase):
         read_back = config.lending("cuda_version = '12.4'\nkeep_releases = 3\n"
                                    "log_dir = 'worker-logs'\n")
 
-        self.assertEqual(config.Lending(cuda=Cuda("12.4"), keep_releases=3,
+        self.assertEqual(config.Lending(cuda=Cuda(12, 4), keep_releases=3,
                                         logs=Path("worker-logs")), read_back)
 
     def test_a_file_naming_no_models_and_no_library_is_not_refused(self):
