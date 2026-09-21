@@ -29,9 +29,9 @@ from .releases import Recorded, Release, Running, Unrecorded
 from .rpc import WORKER
 from .serving import SERVER
 from .units import Bytes
-from .upstream import (Absent, AsPinned, Asked, Asset, BeyondDriver, Choice, Cuda,
-                       Exactly, Latest, Newest, NewestBuild, Present, Published,
-                       Unpublished)
+from .upstream import (Absent, AsPinned, Asked, Asset, Choice, Cuda, Exactly, HeldBack,
+                       Latest, Newest, NewestBuild, PinnedHeldBack, Present, Published,
+                       Unpublished, hindered)
 
 # GitHub asks every caller to say what it is, and turns away one that does not.
 HEADERS = {"User-Agent": "llamacpp-local-updater"}
@@ -69,13 +69,14 @@ def install(settings: Path, asked: Asked, check: bool, force: bool) -> None:
     print(f"Runs:      {_runs(read.build)}")
 
     driver = devices.driver()
+    cards = devices.attached()
     print(f"Driver:    {driver.version}, CUDA {driver.cuda.version}")
-    for one in devices.attached():
+    for one in cards:
         print(f"Card {one.index}:    {one.card.name}, compute capability "
               f"{one.capability.major}.{one.capability.minor}")
 
     published = _published(asked)
-    choice = upstream.choose(read.cuda, published, driver.cuda)
+    choice = upstream.choose(read.cuda, published, driver.cuda, cards)
     cuda = choice.cuda
     print(_chosen(choice, driver.cuda))
 
@@ -144,15 +145,20 @@ def _chosen(choice: Choice, driver: Cuda) -> str:
     """Which CUDA version the release is for, and why that one."""
     match choice:
         case Newest(cuda):
-            return f"CUDA {cuda.version}: the newest published that this driver runs"
+            return f"CUDA {cuda.version}: the newest published, and it runs here"
+        case HeldBack(newest, cuda, why):
+            return (f"CUDA {cuda.version}: the newest that runs here. The newest "
+                    f"published, CUDA {newest.version}, {hindered(why, newest, driver)}; "
+                    "update the NVIDIA driver to run it")
         case AsPinned(cuda):
             return f"CUDA {cuda.version}: as cuda_version pins it"
         case Unpublished(pinned, cuda):
             return (f"CUDA {cuda.version}: cuda_version pins {pinned.version}, which no "
-                    "release is built for lately, so the newest this driver runs instead")
-        case BeyondDriver(pinned, cuda):
-            return (f"CUDA {cuda.version}: cuda_version pins {pinned.version}, and this "
-                    f"driver runs {driver.version} at most, so the newest it runs instead")
+                    "release is built for lately, so the newest that runs here instead")
+        case PinnedHeldBack(pinned, cuda, why):
+            return (f"CUDA {cuda.version}: cuda_version pins {pinned.version}, which "
+                    f"{hindered(why, pinned, driver)}, so the newest that runs here "
+                    "instead")
 
 
 def _settings(settings: Path) -> None:

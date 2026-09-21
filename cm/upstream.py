@@ -7,7 +7,8 @@ Two of them are installed, both named after the CUDA version chosen for this mac
 Which CUDA version that is, is not written down anywhere as a constant. The project
 moves its builds from one version to the next and stops publishing the old one, so a
 version fixed here would stop installing anything the day it moved. What is published
-is read instead, and the newest of it this machine's driver runs is taken.
+is read instead, and the newest of it that runs on this machine is taken: on this
+driver, and on every card here.
 
 Which release to install is not simply the newest published. The assets of a release
 appear over several minutes, so the newest tag frequently exists with the Windows
@@ -23,6 +24,7 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
+from .machine import Attached, Capability
 from .units import Bytes
 
 REPO = "ggml-org/llama.cpp"
@@ -84,15 +86,53 @@ Wanted = Cuda | NewestRunnable
 
 
 @dataclass(frozen=True)
-class AsPinned:
-    """The version the settings file pins, published and within what the driver runs."""
+class Runs:
+    """A build this driver runs, on every card here."""
+
+
+@dataclass(frozen=True)
+class DriverTooOld:
+    """The driver belongs to an older major CUDA version than the build, and nothing on
+    a Windows machine makes that run."""
+
+
+@dataclass(frozen=True)
+class NotReady:
+    """The driver is older than the build, and these cards have only PTX in it: code
+    the driver finishes compiling when a model loads, which a driver older than the
+    build cannot."""
+
+    cards: tuple[Attached, ...]
+
+
+# Why a build would not run here.
+Hindrance = DriverTooOld | NotReady
+
+# Whether a build runs here.
+Verdict = Runs | Hindrance
+
+
+@dataclass(frozen=True)
+class Newest:
+    """Nothing pinned, and this the newest version published: it runs here."""
 
     cuda: Cuda
 
 
 @dataclass(frozen=True)
-class Newest:
-    """Nothing pinned, and this the newest version published that the driver runs."""
+class HeldBack:
+    """Nothing pinned, and the newest version published would not run here. This, the
+    newest that does, is installed instead, and a newer driver is what the newest
+    needs."""
+
+    newest: Cuda
+    cuda: Cuda
+    why: Hindrance
+
+
+@dataclass(frozen=True)
+class AsPinned:
+    """The version the settings file pins, published, and it runs here."""
 
     cuda: Cuda
 
@@ -100,23 +140,24 @@ class Newest:
 @dataclass(frozen=True)
 class Unpublished:
     """The pinned version is not among the builds published lately, and this, the
-    newest the driver runs, stands in for it."""
+    newest that runs here, stands in for it."""
 
     pinned: Cuda
     cuda: Cuda
 
 
 @dataclass(frozen=True)
-class BeyondDriver:
-    """The pinned version is newer than the driver runs, and this, the newest it does
-    run, stands in for it."""
+class PinnedHeldBack:
+    """The pinned version would not run here, and this, the newest that does, stands in
+    for it."""
 
     pinned: Cuda
     cuda: Cuda
+    why: Hindrance
 
 
 # Which CUDA version the release installed is built against, and why that one.
-Choice = AsPinned | Newest | Unpublished | BeyondDriver
+Choice = Newest | HeldBack | AsPinned | Unpublished | PinnedHeldBack
 
 
 @dataclass(frozen=True)
@@ -248,37 +289,97 @@ def supported(encoded: int) -> Cuda:
     return Cuda(encoded // 1000, encoded % 1000 // 10)
 
 
-def choose(wanted: Wanted, releases: Sequence[Published], driver: Cuda) -> Choice:
-    """Which CUDA version to install a release for.
+def choose(wanted: Wanted, releases: Sequence[Published], driver: Cuda,
+           cards: Sequence[Attached]) -> Choice:
+    """Which CUDA version to install a release for: the newest published that runs on
+    this driver and every card here.
 
-    Never one newer than the driver runs. A build compiled against a later CUDA than the
-    driver supports may or may not start, depending on what it calls; this does not bet
-    a machine on which.
+    Where the newest published does not run, the newest that does is taken and the
+    choice says why, so the driver can be brought up to it -- a machine refusing to
+    install because its driver lags is worse off than one running the version before.
 
-    A pinned version is taken where it is published and the driver runs it. Where it is
-    not, the newest the driver does run is taken instead and the choice says what it
-    stands in for: the pin is for keeping machines alike -- a slave and the router
-    running the same flavour -- and a machine that installs nothing because the project
-    stopped building that flavour is worse off than one running the next.
+    A pinned version is taken where it is published and runs here, and stood in for the
+    same way where it does not: the pin is for keeping machines alike, and a machine
+    that installs nothing because the project stopped building that version is worse
+    off than one running the next.
     """
     published = flavours(releases)
-    runnable = tuple(one for one in published if one <= driver)
+    running = tuple(one for one in published
+                    if isinstance(verdict(one, driver, cards), Runs))
 
-    match runnable:
+    match running:
         case ():
-            raise Unavailable(_nothing_runs(published, driver, releases))
+            raise Unavailable(_nothing_runs(published, driver, cards, releases))
         case (newest, *_):
             pass
 
     match wanted:
         case NewestRunnable():
-            return Newest(newest)
+            match verdict(published[0], driver, cards):
+                case Runs():
+                    return Newest(newest)
+                case DriverTooOld() | NotReady() as why:
+                    return HeldBack(published[0], newest, why)
         case Cuda() as pinned if pinned not in published:
             return Unpublished(pinned, newest)
-        case Cuda() as pinned if pinned > driver:
-            return BeyondDriver(pinned, newest)
         case Cuda() as pinned:
-            return AsPinned(pinned)
+            match verdict(pinned, driver, cards):
+                case Runs():
+                    return AsPinned(pinned)
+                case DriverTooOld() | NotReady() as why:
+                    return PinnedHeldBack(pinned, newest, why)
+
+
+def verdict(build: Cuda, driver: Cuda, cards: Sequence[Attached]) -> Verdict:
+    """Whether a build for this CUDA version runs on this driver, on every card here.
+
+    NVIDIA's CUDA Compatibility guide: a driver runs a build for its own CUDA version or
+    an older one. One of the same major version runs a newer build too, but only the
+    code compiled for a card's own architecture; PTX from a newer toolkit is beyond it.
+    A driver of an older major version runs nothing newer at all, short of a
+    compatibility package that is not made for Windows.
+    """
+    if build <= driver:
+        return Runs()
+    if build.major > driver.major:
+        return DriverTooOld()
+
+    lacking = tuple(one for one in cards if one.capability not in finished(build))
+    return NotReady(lacking) if lacking else Runs()
+
+
+def finished(build: Cuda) -> frozenset[Capability]:
+    """The cards a published build carries finished code for, by compute capability.
+
+    The Windows builds name no architectures of their own and take ggml's defaults, in
+    ggml/src/ggml-cuda/CMakeLists.txt: finished code for 8.6 and 8.9 -- RTX 3000 and
+    4000 -- and for 12.0 and 12.1 from the CUDA versions that know Blackwell. Every other
+    card, an RTX 2070 at 7.5 among them, gets PTX. Written out here because nothing a
+    release publishes says it; where ggml changes that list, this has to follow.
+    """
+    found = {Capability(8, 6)}
+    if build >= Cuda(11, 8):
+        found.add(Capability(8, 9))
+    if build >= Cuda(12, 8):
+        found.add(Capability(12, 0))
+    if build >= Cuda(12, 9):
+        found.add(Capability(12, 1))
+
+    return frozenset(found)
+
+
+def hindered(why: Hindrance, build: Cuda, driver: Cuda) -> str:
+    """Why a build for this version would not run here, as the end of a sentence."""
+    match why:
+        case DriverTooOld():
+            return (f"needs a CUDA {build.major} driver, and this one is CUDA "
+                    f"{driver.version}")
+        case NotReady(cards):
+            names = ", ".join(f"{one.card.name} ({one.capability.major}."
+                              f"{one.capability.minor})" for one in cards)
+            return (f"carries no finished code for {names}, which needs a CUDA "
+                    f"{build.version} driver to run it, and this one is CUDA "
+                    f"{driver.version}")
 
 
 def flavours(releases: Sequence[Published]) -> tuple[Cuda, ...]:
@@ -293,14 +394,18 @@ def flavours(releases: Sequence[Published]) -> tuple[Cuda, ...]:
     return tuple(sorted(found, reverse=True))
 
 
-def _nothing_runs(published: Sequence[Cuda], driver: Cuda,
+def _nothing_runs(published: Sequence[Cuda], driver: Cuda, cards: Sequence[Attached],
                   releases: Sequence[Published]) -> str:
-    """Why no version can be chosen: none is published, or none this driver runs."""
-    if published:
-        return (f"This driver runs CUDA {driver.version} at most, and every Windows build "
-                "published lately needs a newer one: "
-                f"{', '.join(one.version for one in published)}.\n"
-                "Update the NVIDIA driver, and run this again.")
+    """Why no version can be chosen: none is published, or none runs here."""
+    match published:
+        case (newest, *_):
+            match verdict(newest, driver, cards):
+                case DriverTooOld() | NotReady() as why:
+                    return (f"Nothing published lately runs here. The newest, CUDA "
+                            f"{newest.version}, {hindered(why, newest, driver)}.\n"
+                            "Update the NVIDIA driver, and run this again.")
+                case Runs():
+                    pass
 
     seen = ", ".join(f"b{one.build}" for one in releases[:5]) or "none"
     return ("No release carries a Windows CUDA archive, "

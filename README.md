@@ -26,7 +26,7 @@ programs that read the machine.
 | run it as | on which machine | what it does |
 |---|---|---|
 | `python -m cm` | either | Prints the thirteen below in the order they are run, so that which one comes next is not something to open this file for |
-| `python -m cm.install llamacpp` | the one with the card, and one lending its card | Installs the newest llama.cpp release published for the CUDA version this machine's driver runs -- or, with `--build`, the build named -- records it in the settings file as the build everything here runs, and removes the releases past keeping. `--check` says which build that would be |
+| `python -m cm.install llamacpp` | the one with the card, and one lending its card | Installs the newest llama.cpp release that runs on this machine's driver and cards -- or, with `--build`, the build named -- records it in the settings file as the build everything here runs, and removes the releases past keeping. `--check` says which build that would be |
 | `python -m cm.scan` | the one with the card | Adds an entry to the settings file for every model in the library that has none yet, named after the file, and brings every entry's sampler values up to date with `recommended.toml` in this repository. An entry marked `manual = true` is left alone; an entry whose file is gone is taken out, whatever else it says. `--force` also keys every entry the way the library names its file |
 | `python -m cm.models` | the one with the card | The models the settings file names: whether the file is in the library, which repository it came from, and the commit that repository is at now. Downloads nothing |
 | `python -m cm.calibrate` | the one with the card | Works out where each model in the settings file sits on this card, and writes `llamacpp.models.ini` — the preset the router reads. Loads nothing; it asks the estimator, which reads GGUF headers, so it takes seconds |
@@ -200,9 +200,15 @@ whatever the file says, and every other key has a default or is asked for by the
 that needs it. So the same command puts llama.cpp on a machine lending its card, which
 never needs to know where any model is.
 
-Then it asks the NVIDIA driver which CUDA version it runs, reads which CUDA versions the
-project builds for Windows, and takes the newest of those the driver runs. It downloads
-the newest release built for that version and the CUDA runtime beside it -- some 550 MB,
+Then it asks the NVIDIA driver which CUDA version it runs and `nvidia-smi` which cards
+there are, reads which CUDA versions the project builds for Windows, and takes the newest
+of those that runs here. A driver runs a build for its own CUDA version or an older one;
+one of the same major version runs a newer build as well, on the cards the build carries
+finished code for -- RTX 3000, 4000 and 5000 -- but not on the ones it carries only PTX
+for, such as an RTX 2070, which need a driver at least as new as the build. Where the
+newest published does not run here, the newest that does is taken, and it says which
+driver the newest needs. It downloads the newest release built for that version and the
+CUDA runtime beside it -- some 550 MB,
 700 MB unpacked -- unpacks it into `.llamacpp\b11070-cuda13.4`, and moves it into place
 only once the server in it reports the build number it was downloaded as. Then it
 records that build in the settings file, as `llamacpp_build = 11070`, and that is the
@@ -220,9 +226,9 @@ Two keys in that copy are worth a look before the download rather than after.
 `cuda_version` is left out unless a machine has to stay on one CUDA version -- a slave
 and the router kept alike, say. Left out, the version follows the project: it moves its
 builds from one CUDA version to the next and stops publishing the old one, and `install`
-moves with it, never past what the driver runs. Named, that version is taken while the
-project publishes it and the driver runs it; where either stops being true, `install`
-takes the newest the driver runs instead and says what it stood in for, rather than
+moves with it, never to one that does not run here. Named, that version is taken while
+the project publishes it and it runs here; where either stops being true, `install`
+takes the newest that runs instead and says what it stood in for, rather than
 installing nothing. Write it the way the archives do, in quotes: `'13.4'`.
 
 `model_root` is the directory the weights sit under. Left commented out it falls back to
@@ -663,7 +669,7 @@ command that deals with it. The ones worth knowing in advance:
 |---|---|
 | `settings.toml not found at ...` | you are not in the directory the settings file is in, or `install llamacpp` has not run to make one |
 | `model_root is not set and there is no LM Studio library at ...` | uncomment `model_root` and name the directory the weights are under |
-| `This driver runs CUDA ... at most, and every Windows build published lately needs a newer one` | the NVIDIA driver is older than anything the project builds for Windows now. Update it |
+| `Nothing published lately runs here` | the NVIDIA driver is too old for anything the project builds for Windows now, on one of the cards it names. Update it |
 | `No release carries a Windows CUDA archive` | the project has renamed its archives, and this needs revisiting. It prints the newest tags it saw |
 | `No llama.cpp release under ... carries llama-server.exe` | step 1 has not happened: nothing is unpacked in `.llamacpp` yet |
 | `No llama.cpp release under ... carries ggml-rpc-server.exe` | on a machine lending its card: `install llamacpp` has not run there yet |
@@ -687,10 +693,10 @@ Where llama.cpp is is not among them: the releases are in `.llamacpp` beside thi
 
 **Which llama.cpp.** `llamacpp_build` is the build everything here runs, and
 `install llamacpp` writes it. `cuda_version` pins the CUDA version of the archives it
-takes, where it would otherwise take the newest the driver runs, and `keep_releases` says
+takes, where it would otherwise take the newest that runs here, and `keep_releases` says
 how many unpacked releases to keep when it installs a newer one. Neither of the two has
-to be named: without them the version follows the project and the driver, and two
-releases are kept.
+to be named: without them the version follows the project, the driver and the cards,
+and two releases are kept.
 
 **How the router runs.** `listen_host` and `port` are what it binds, `models_max` how
 many models may be resident at once, `sleep_idle_seconds` how long an idle one is kept
