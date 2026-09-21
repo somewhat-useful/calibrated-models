@@ -29,8 +29,15 @@
 
 # How many unpacked releases to keep when install unpacks a newer one. Two leaves the
 # one that was running to fall back to; the rest are removed, at some 670 MB each. A
-# release a server is running from is kept whatever this says.
+# release a server is running from is kept whatever this says, and so are the build
+# recorded below and every one installed with --build, which go by hand.
 # keep_releases = 2
+
+# The llama.cpp build everything here runs: the router, calibrate, a slave's worker.
+# Install writes it -- the build it put in place last, the newest or the one named with
+# --build -- and naming the same build on the router's machine and on a slave is what
+# keeps the two able to talk. Left out, the newest release unpacked here runs.
+# llamacpp_build = 11070
 
 # The file calibrate writes and the router reads, beside this one.
 preset_path = 'llamacpp.models.ini'

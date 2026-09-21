@@ -4,7 +4,7 @@ The router is the one thing worth registering. It holds no model until a request
 one and unloads what it holds after an idle period, so a task that is always there costs
 nothing while the machine is doing something else.
 
-What it starts is this program rather than the server itself: the newest release is
+What it starts is this program rather than the server itself: the release to run is
 resolved at every start, so installing one takes effect at the next boot with nothing
 further to do. And it starts it in the foreground, which keeps the task alive for as
 long as the server runs -- that is what makes the scheduler's restart-on-failure setting

@@ -9,15 +9,17 @@ import json
 import unittest
 from pathlib import Path, PureWindowsPath
 
-from cm import config, library, place, workspace
+from cm import config, files, library, place, workspace
 from cm.config import (DEFAULT_CUDA, DEFAULT_KEPT, DEFAULT_RUNTIME, DERIVED, NEUTRAL,
-                       Config, ConfigError, Rename, Runtime, Writing, naming, removing,
-                       renames, renaming, retuning, unnamed)
+                       Config, ConfigError, Installing, Rename, Runtime, Writing,
+                       installing, names_the_library, naming, recording_the_build,
+                       removing, renames, renaming, retuning, unnamed)
 from cm.library import Key
 from cm.lmstudio import Found, Missing
 from cm.machine import Fitted, Fixed, Share
 from cm.place import CacheType
 from cm.recommended import Recommended, Unknown
+from cm.releases import Recorded, Unrecorded
 from cm.serving import (DEFAULT_HOST, DEFAULT_IDLE, DEFAULT_PORT,
                         DEFAULT_RESIDENT)
 from cm.units import Mib, Tokens
@@ -1031,6 +1033,93 @@ class TheTemplateInThisRepositoryIsWhatInstallCopies(unittest.TestCase):
         """model_root still commented out: the library LM Studio recorded is where they are."""
         self.assertEqual(ELSEWHERE, parse(self.shipped(), LIBRARY).model_root)
 
+
+class InstallReadsWhatItNeedsOnAnyMachine(unittest.TestCase):
+    """install runs on a machine lending its card as well, which names no model and
+    keeps no library."""
+
+    def test_a_machine_with_no_settings_file_installs_on_the_defaults(self):
+        self.assertEqual(Installing(cuda=DEFAULT_CUDA, keep_releases=DEFAULT_KEPT,
+                                    build=Unrecorded()),
+                         installing(""))
+
+    def test_what_the_file_says_is_what_it_reads(self):
+        read_back = installing("cuda_version = '12.4'\nkeep_releases = 3\n"
+                               "llamacpp_build = 11065\n")
+
+        self.assertEqual(Installing(cuda=Cuda(12, 4), keep_releases=3,
+                                    build=Recorded(11065)), read_back)
+
+    def test_a_file_naming_no_models_and_no_library_is_not_refused(self):
+        self.assertEqual(Unrecorded(), installing("reserve_mib = 1024\n").build)
+
+
+class TheBuildToRunIsRecordedAsANumber(unittest.TestCase):
+    def test_the_router_reads_it_too(self):
+        text = BARE.replace("[models", "llamacpp_build = 11065\n\n[models")
+
+        self.assertEqual(Recorded(11065), parse(text).build)
+
+    def test_none_recorded_is_none_recorded(self):
+        self.assertEqual(Unrecorded(), parse(BARE).build)
+
+    def test_what_is_not_a_build_number_is_refused(self):
+        for written in ("0", "-1"):
+            with self.subTest(written=written):
+                text = BARE.replace("[models", f"llamacpp_build = {written}\n\n[models")
+
+                self.assertEqual(f"llamacpp_build is {written}; it is the number of a "
+                                 "llama.cpp build, as in b11070", refused(text))
+
+    def test_what_is_not_a_number_at_all_is_refused(self):
+        for written in ("'11065'", "true", "11065.0"):
+            with self.subTest(written=written):
+                text = BARE.replace("[models", f"llamacpp_build = {written}\n\n[models")
+
+                self.assertEqual("llamacpp_build must be a whole number", refused(text))
+
+
+class InstallRecordsTheBuildAndTouchesNothingElse(unittest.TestCase):
+    def test_a_key_commented_out_is_replaced_where_it_stands(self):
+        text = "a = 1\n# llamacpp_build = 10000\nb = 2\n[models]\n"
+
+        self.assertEqual("a = 1\nllamacpp_build = 11065\nb = 2\n[models]\n",
+                         recording_the_build(text, 11065))
+
+    def test_a_key_already_written_is_replaced(self):
+        text = "llamacpp_build = 11070\n[models]\n"
+
+        self.assertEqual("llamacpp_build = 11065\n[models]\n",
+                         recording_the_build(text, 11065))
+
+    def test_where_there_is_none_it_goes_before_every_table(self):
+        """A top-level key after a table header would belong to that table."""
+        self.assertEqual("llamacpp_build = 11065\n[models]\nx = 1\n",
+                         recording_the_build("[models]\nx = 1\n", 11065))
+
+    def test_an_empty_file_gets_the_key_and_nothing_else(self):
+        self.assertEqual("llamacpp_build = 11065\n", recording_the_build("", 11065))
+
+    def test_what_is_written_reads_back_as_the_build(self):
+        written = recording_the_build(BARE, 11065)
+
+        self.assertEqual(Recorded(11065), parse(written).build)
+        self.assertEqual(parse(BARE).models, parse(written).models)
+
+    def test_the_template_takes_it_where_it_says(self):
+        written = recording_the_build(files.read(workspace.template()), 11065)
+
+        self.assertEqual(Recorded(11065), installing(written).build)
+
+
+class WhetherTheFileSaysWhereTheModelsAre(unittest.TestCase):
+    def test_a_model_root_written(self):
+        self.assertTrue(names_the_library("model_root = 'D:\\\\x'\n"))
+
+    def test_none_written_or_commented_out(self):
+        for text in ("", "# model_root = 'D:\\\\x'\n", "model_root = ''\n"):
+            with self.subTest(text=text):
+                self.assertFalse(names_the_library(text))
 
 if __name__ == "__main__":
     unittest.main()

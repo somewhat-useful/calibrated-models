@@ -32,6 +32,12 @@ REPO = "ggml-org/llama.cpp"
 # report.
 RELEASES_URL = f"https://api.github.com/repos/{REPO}/releases?per_page=30"
 
+
+def tagged(number: int) -> str:
+    """Where the API answers for one build's release, however far back it was
+    published."""
+    return f"https://api.github.com/repos/{REPO}/releases/tags/b{number}"
+
 # A build's own tag. A release tagged anything else belongs to something other than the
 # per-build stream this installs from.
 _TAG = re.compile(r"^b(\d+)$")
@@ -102,6 +108,23 @@ class BeyondDriver:
 
 # Which CUDA version the release installed is built against, and why that one.
 Choice = AsPinned | Newest | Unpublished | BeyondDriver
+
+
+@dataclass(frozen=True)
+class NewestBuild:
+    """The newest build published for the CUDA version this machine takes."""
+
+
+@dataclass(frozen=True)
+class Exactly:
+    """One build, by its number: the one another machine runs, say, so that a router and
+    a slave run the same."""
+
+    number: int
+
+
+# Which build install puts in place.
+Asked = NewestBuild | Exactly
 
 
 @dataclass(frozen=True)

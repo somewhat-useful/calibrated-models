@@ -26,23 +26,24 @@ programs that read the machine.
 | run it as | on which machine | what it does |
 |---|---|---|
 | `python -m cm` | either | Prints the thirteen below in the order they are run, so that which one comes next is not something to open this file for |
-| `python -m cm.install llamacpp` | the one with the card | Installs the newest llama.cpp release published for this machine's CUDA version, and removes the ones past keeping |
+| `python -m cm.install llamacpp` | the one with the card, and one lending its card | Installs the newest llama.cpp release published for the CUDA version this machine's driver runs -- or, with `--build`, the build named -- records it in the settings file as the build everything here runs, and removes the releases past keeping. `--check` says which build that would be |
 | `python -m cm.scan` | the one with the card | Adds an entry to the settings file for every model in the library that has none yet, named after the file, and brings every entry's sampler values up to date with `recommended.toml` in this repository. An entry marked `manual = true` is left alone; an entry whose file is gone is taken out, whatever else it says. `--force` also keys every entry the way the library names its file |
 | `python -m cm.models` | the one with the card | The models the settings file names: whether the file is in the library, which repository it came from, and the commit that repository is at now. Downloads nothing |
 | `python -m cm.calibrate` | the one with the card | Works out where each model in the settings file sits on this card, and writes `llamacpp.models.ini` — the preset the router reads. Loads nothing; it asks the estimator, which reads GGUF headers, so it takes seconds |
-| `python -m cm.router start` | the one with the card | Runs the server of the newest release unpacked here, on the preset `calibrate` wrote, and reports what it serves. `stop` ends the server that is holding the configured port |
+| `python -m cm.router start` | the one with the card | Runs the server of the build the settings file records, on the preset `calibrate` wrote, and reports what it serves. `stop` ends the server that is holding the configured port |
 | `python -m cm.autostart` | the one with the card | Registers the scheduled task that starts the router at boot, or `--remove`s it. Needs an elevated session; stores no password |
 | `python -m cm.firewall` | the one with the card | Admits the local subnet to the router's port, so other machines can call it, or `--remove`s that rule. Needs an elevated session |
 | `python -m cm.vram` | the one with the card | What the router can load right now, and what to close so it can load the rest. A screen that keeps reading while you close things |
 | `python -m cm.install pi` | any machine that calls it | Installs the pi agent and the context-policy extension, or brings both up to date |
 | `python -m cm.pi <host>` | any machine that calls it | Points the pi agent at the router and rewrites its model list from what the router actually serves |
-| `python -m cm.install slave` | a machine lending its card | Installs llama.cpp there, registers the scheduled task that starts its RPC worker at boot, and admits the local subnet to the worker's port, then prints what to type on the machine with the router. Needs an elevated session; stores no password |
+| `python -m cm.install slave` | a machine lending its card | Registers the scheduled task that starts its RPC worker at boot, from the release `install llamacpp` put there, and admits the local subnet to the worker's port, then prints what to type on the machine with the router. Needs an elevated session; stores no password |
 | `python -m cm.slave start` | a machine lending its card | Starts the worker by hand, lending the card with the most memory. `stop` ends the worker holding its port |
 | `python -m cm.install master <host> <memory>` | the one with the router | Names the slave in the settings file — where its worker listens and how much memory its card has — and says whether it answers. `calibrate` then places models across that card too |
 
 They share no state of their own. `scan` writes the entries `calibrate` places,
 `calibrate` writes a file `router` hands to the
-server, `install llamacpp` unpacks the releases both of them run, `autostart` and
+server, `install llamacpp` unpacks the releases both of them run and records which build
+that is, `autostart` and
 `firewall` make the router something the network can reach without anybody logging in,
 `install pi` puts the agent on the machine that calls, and `pi` asks the router over
 HTTP and copies nothing from the machine with the card. `install master` writes the one
@@ -89,7 +90,7 @@ On a machine that calls it: npm, if you want `install pi` to put pi there. Any o
 OpenAI-compatible client works with no script at all.
 
 On a machine lending its card: an NVIDIA driver with `nvidia-smi` on the path, and a
-copy of this repository to run `install slave` from, which puts llama.cpp there.
+copy of this repository to run `install llamacpp` and `install slave` from.
 
 Nothing here is installed. The programs run from the directory this repository is in,
 and that directory is the whole of it: the llama.cpp releases go into `.llamacpp` inside
@@ -125,8 +126,9 @@ The rest of what they take, in full:
 
 | command | flag | what it does |
 |---|---|---|
-| `install llamacpp` | `--check` | report what is installed and what is available, and download nothing |
-| | `--force` | install even where the newest release is already here -- after an install that was interrupted or came out damaged |
+| `install llamacpp` | `--check` | say which build would be installed -- `Build: b11070` -- and download and record nothing |
+| | `--build` | install this build rather than the newest: the one the other machine's `--check` printed, so that the router and a slave run the same. Pruning leaves it for you to remove |
+| | `--force` | download even where the release is already here -- after an install that was interrupted or came out damaged |
 | `router start` | `--print-command` | print what would be run, and start nothing |
 | | `--foreground` | run the server in this console instead of detaching, so that whatever started this stays alive with it |
 | | `--startup-check-seconds` | how long to wait before reporting what it serves. Five; `0` reports nothing and returns as soon as it is started |
@@ -166,7 +168,7 @@ which is the one thing `--help` on any single command cannot tell you.
 repository need installing -- clone or unpack it anywhere and run the programs from that
 directory, which is where everything they make will be.
 
-The whole path is nine commands, and two more where another machine lends its card; the
+The whole path is nine commands, and three more where another machine lends its card; the
 rest of this section is what each one does. `python -m cm` prints this list in the
 console, so it is not something to come back here for:
 
@@ -180,7 +182,8 @@ python -m cm.autostart                # 4. and at every boot        (elevated)
 python -m cm.firewall                 #    and from the local network (elevated)
 python -m cm.install pi               # 5. on whatever machine calls it
 python -m cm.pi <the machine with the card>
-python -m cm.install slave            # 6. on a machine lending its card (elevated)
+python -m cm.install llamacpp         # 6. on a machine lending its card, --build N
+python -m cm.install slave            #    there too                  (elevated)
 python -m cm.install master <it> 12G  #    here, naming it; then calibrate again
 ```
 
@@ -193,14 +196,24 @@ python -m cm.install llamacpp
 On a machine that has no `settings.toml` it copies one from `settings.template.toml`
 beside it, and says so. Nothing in that copy has to be edited before the download, which
 is what lets one command do both: the releases go into `.llamacpp` in this directory
-whatever the file says, and every other key has a default or is asked for.
+whatever the file says, and every other key has a default or is asked for by the command
+that needs it. So the same command puts llama.cpp on a machine lending its card, which
+never needs to know where any model is.
 
 Then it asks the NVIDIA driver which CUDA version it runs, reads which CUDA versions the
 project builds for Windows, and takes the newest of those the driver runs. It downloads
 the newest release built for that version and the CUDA runtime beside it -- some 550 MB,
 700 MB unpacked -- unpacks it into `.llamacpp\b11070-cuda13.4`, and moves it into place
-only once the server in it reports the build number it was downloaded as. `--check`
-first says what it would do and downloads nothing.
+only once the server in it reports the build number it was downloaded as. Then it
+records that build in the settings file, as `llamacpp_build = 11070`, and that is the
+build the router, `calibrate` and a slave's worker run from then on -- not whichever is
+newest in `.llamacpp`. `--check` says which build it would install and downloads and
+records nothing.
+
+`--build 11065` installs that build rather than the newest, and where it is already
+unpacked downloads nothing and only records it: that is how a machine is moved back
+onto a build it has. A build installed this way is never removed by pruning; it goes
+when you delete it.
 
 Two keys in that copy are worth a look before the download rather than after.
 
@@ -215,8 +228,8 @@ installing nothing. Write it the way the archives do, in quotes: `'13.4'`.
 `model_root` is the directory the weights sit under. Left commented out it falls back to
 LM Studio's library, since that is where these files land anyway and LM Studio records
 the folder it downloads into. Where LM Studio is not installed there is nothing to fall
-back on and nothing on the machine to read it off, so `install` asks while it is making
-the copy:
+back on and nothing on the machine to read it off, so `scan`, the first command that
+needs the models, asks:
 
 ```
 There is no LM Studio library at C:\Users\you\.lmstudio\models, so nothing on this
@@ -224,10 +237,9 @@ machine says where the models are.
 Directory the models are under: D:\models
 ```
 
-and writes that answer into the copy as `model_root`. A directory that is not there yet
-is taken, with a line saying it will read as empty until it is. Where nobody is at the
-keyboard -- a pipe, a script -- it refuses rather than guessing, and says to copy the
-template by hand. Either way what the file says wins over the library.
+and writes that answer into the settings file as `model_root`. Where nobody is at the
+keyboard -- a pipe, a script -- it refuses rather than guessing, and says to set
+`model_root` by hand. Either way what the file says wins over the library.
 
 **2. The models.** Nothing to type: `scan` writes an entry for every GGUF in the library
 that has none yet, and keeps every entry's sampler values in step with what this
@@ -401,8 +413,9 @@ takes seconds per model.
 python -m cm.router start
 ```
 
-It runs the server of the newest release unpacked in `.llamacpp`, detached, with
-the preset from step 2 and nothing else -- no model is loaded until a request names one.
+It runs the server of the build `install llamacpp` recorded, from `.llamacpp`, detached,
+with the preset from step 2 and nothing else -- no model is loaded until a request names
+one.
 Then it waits five seconds and reports what the router says it serves, so a start that
 did not survive is a message rather than a silence. `--print-command` shows what would
 be run and starts nothing; `python -m cm.router stop` stops what is serving.
@@ -473,20 +486,30 @@ dated backup is kept. `--preview` prints what it would write and writes nothing.
 Any other OpenAI-compatible client needs no script at all: point it at
 `http://<the machine>:18081/v1`.
 
-**6. Another machine's card**, where there is one to lend. The first command on that
-machine, from a copy of this repository; the rest on this one:
+**6. Another machine's card**, where there is one to lend. The router and the worker on
+that machine only talk when they are the same build, so first ask both which build they
+would install, on each of them:
 
 ```bash
+python -m cm.install llamacpp --check
+```
+
+and take the lower of the two numbers it prints. Then the first two commands on that
+machine, from a copy of this repository, and the rest on this one:
+
+```bash
+python -m cm.install llamacpp --build 11065
 python -m cm.install slave
+python -m cm.install llamacpp --build 11065
 python -m cm.install master <that machine> 12G
 python -m cm.calibrate
 python -m cm.router start
 ```
 
-The first asks for the rights it needs, installs llama.cpp there, starts its worker at
-every boot and says what to type here; the second writes that machine into the settings
-file. Then the models are placed again, and the router started on what that wrote. What
-each of them does, and what `calibrate` does with the card, is
+The first puts that build there; the second asks for the rights it needs, starts its
+worker at every boot and says what to type here. Here the same build is installed, the
+slave written into the settings file, the models placed again, and the router started
+on what that wrote. What each of them does, and what `calibrate` does with the card, is
 [below](#several-cards-and-a-card-lent-over-the-network).
 
 ---
@@ -511,20 +534,20 @@ python -m cm.router start
 ```
 
 The first installs whatever the project has published since, carrying the CUDA runtime
-over from the release already there rather than downloading four hundred megabytes of it
-again, and removes the releases past `keep_releases` -- except one a server is running
-from. The highest build number present is what runs, so a start is what puts the router
-on it.
+over from a release of the same CUDA version already there rather than downloading four
+hundred megabytes of it again, records it as the build to run, and removes the releases
+past `keep_releases` -- except the one recorded, one a server is running from, and every
+one installed with `--build`. A start is what puts the router on it.
 
 `calibrate` again because the placements were measured by asking that build's
 `llama-fit-params` what fits. A build that packs its buffers differently answers
 differently, and the preset would still be holding the old answer. It costs seconds and
 loads nothing.
 
-Where another machine lends its card, run `python -m cm.install slave` there as well, and
-start its worker again with `python -m cm.slave start`. Keep the two machines on one
-release: the router and the worker talk to each other, and nothing here checks that two
-releases still agree on how.
+Where another machine lends its card, the two move together: the router and the worker
+talk to each other, and nothing here checks that two builds still agree on how. Run
+`python -m cm.install llamacpp --check` on both, install the lower build on both with
+`--build`, and start the worker there again with `python -m cm.slave start`.
 
 **Which models are served right now**, without any client:
 
@@ -643,7 +666,8 @@ command that deals with it. The ones worth knowing in advance:
 | `This driver runs CUDA ... at most, and every Windows build published lately needs a newer one` | the NVIDIA driver is older than anything the project builds for Windows now. Update it |
 | `No release carries a Windows CUDA archive` | the project has renamed its archives, and this needs revisiting. It prints the newest tags it saw |
 | `No llama.cpp release under ... carries llama-server.exe` | step 1 has not happened: nothing is unpacked in `.llamacpp` yet |
-| `No llama.cpp release under ... carries ggml-rpc-server.exe` | on a machine lending its card: `install slave` has not run there yet |
+| `No llama.cpp release under ... carries ggml-rpc-server.exe` | on a machine lending its card: `install llamacpp` has not run there yet |
+| `The settings file records build N as the one to run, and no release of it ... carries ...` | that build was deleted by hand, or the settings file came from another machine. It prints the `--build` line that puts it back |
 | `The preset the router reads was not found: ...` | `calibrate` has not run since the settings file changed |
 | `qwen3.8: ctx-size is derived; remove it` | a placement was written into the settings file by hand. Those are measured, and one written down would be obeyed silently and wrongly |
 | `Port N is still held by process M` | either a router this session may not signal — one started by the scheduled task, under another logon session — or something that is not `llama-server.exe` and was left alone deliberately. It prints the elevated `Stop-Process` line either way |
@@ -655,16 +679,18 @@ command that deals with it. The ones worth knowing in advance:
 ## The settings file
 
 `settings.toml` is yours. `install llamacpp` copies it from the template where there is
-none, and nothing writes it after that. It holds three kinds of thing:
+none and records in it the build it installs; `scan` writes the model entries and
+`install master` the slave, and nothing else writes it. It holds three kinds of thing:
 
 **Where things are.** `model_root`, and `preset_path` — the file `calibrate` writes.
 Where llama.cpp is is not among them: the releases are in `.llamacpp` beside this file.
 
-**Which llama.cpp.** `cuda_version` pins the CUDA version of the archives
-`install llamacpp` takes, where it would otherwise take the newest the driver runs, and
-`keep_releases` says how many unpacked releases to keep when it installs a newer one.
-Neither has to be named: without them the version follows the project and the driver,
-and two releases are kept.
+**Which llama.cpp.** `llamacpp_build` is the build everything here runs, and
+`install llamacpp` writes it. `cuda_version` pins the CUDA version of the archives it
+takes, where it would otherwise take the newest the driver runs, and `keep_releases` says
+how many unpacked releases to keep when it installs a newer one. Neither of the two has
+to be named: without them the version follows the project and the driver, and two
+releases are kept.
 
 **How the router runs.** `listen_host` and `port` are what it binds, `models_max` how
 many models may be resident at once, `sleep_idle_seconds` how long an idle one is kept
@@ -873,20 +899,23 @@ can lend it to this one. It runs llama.cpp's RPC worker, which offers that card 
 whatever connects, and a profile that uses it keeps some of its layers there and reaches
 them across the network.
 
-That machine needs an NVIDIA driver and a copy of this repository, and one command, run
+That machine needs an NVIDIA driver and a copy of this repository, and two commands, run
 from that copy in an ordinary console:
 
 ```bash
+python -m cm.install llamacpp --build 11065
 python -m cm.install slave
 ```
 
-It installs llama.cpp into `.llamacpp` the way `install llamacpp` does; registers the
-scheduled task `llama.cpp RPC worker`, which starts the worker at every boot the way
-`autostart` starts the router, as that account and with no password stored; and admits
-the local subnet to the worker's port, 50052, the way `firewall` does. Like those two it
-asks Windows for the rights before doing any of it. No settings file is needed there:
-where one exists, `cuda_version`, `keep_releases` and `log_dir` are read from it, and
-nothing else. Then it says what to type on the machine with the router:
+The first installs llama.cpp there as it does on any machine -- the build the router
+runs, which `--check` on both machines settles -- and records it in a settings file of
+that machine's own. The second installs nothing, and refuses where there is nothing
+installed to run; it registers the scheduled task `llama.cpp RPC worker`, which starts
+the worker at every boot the way `autostart` starts the router, as that account and with
+no password stored, and admits the local subnet to the worker's port, 50052, the way
+`firewall` does. Like those two it asks Windows for the rights before doing any of it.
+Of the settings file there, the worker reads `llamacpp_build` and `log_dir` and nothing
+else. Then it says what to type on the machine with the router:
 
 ```
 Lending NVIDIA GeForce RTX 5070 Ti Laptop GPU, 12227 MiB, on port 50052.

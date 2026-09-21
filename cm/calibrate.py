@@ -19,6 +19,7 @@ from .facts import parse_facts
 from .machine import Machine, UnreadableDevice, off_card, system_memory
 from .name import names
 from .place import Limits, Local, Question, Remote, Reserves, Settings, Worker
+from .releases import Running
 from .render import Placed
 from .units import Mib
 
@@ -57,7 +58,7 @@ def _calibrate(settings: Path) -> None:
     if not read.models:
         raise ConfigError(_names_nothing(settings, read))
 
-    estimator = _estimator(workspace.engines())
+    estimator = _estimator(workspace.engines(), read.build)
 
     machine = devices.probe()
     reserves = Reserves(alone=read.reserve, with_others=read.reserve_multi_gpu,
@@ -157,15 +158,17 @@ def _seats(machine: Machine, limits: Limits) -> tuple[str, ...]:
     return tuple(lines)
 
 
-def _estimator(engines: Path) -> Path:
-    """The newest unpacked release that carries the estimator."""
-    for release in releases.releases(files.directories(engines)):
+def _estimator(engines: Path, running: Running) -> Path:
+    """The estimator of the build the settings file records, or of the newest release
+    here where it records none: the build the router runs, so what it is asked about
+    is what the router will load."""
+    for release in releases.to_run(releases.releases(files.directories(engines)),
+                                   running):
         binary = engines / release.name / ESTIMATOR
         if files.exists(binary):
             return binary
 
-    raise ConfigError(f"No llama.cpp release under {engines} carries {ESTIMATOR}.\n"
-                      "Install one: python -m cm.install llamacpp")
+    raise ConfigError(releases.unfound(engines, ESTIMATOR, running))
 
 
 def _place(estimator: Path, read: Config, model: Model, limits: Limits) -> Placed:

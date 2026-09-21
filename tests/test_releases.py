@@ -8,8 +8,10 @@ moment it would be deleted.
 
 import unittest
 
-from cm.releases import (Pruned, Release, built_against, current, missing, prune,
-                         releases, verifies)
+from pathlib import Path
+
+from cm.releases import (Pruned, Recorded, Release, Unrecorded, built_against, missing,
+                         prune, releases, to_run, unfound, verifies)
 from cm.upstream import Cuda
 
 
@@ -50,24 +52,6 @@ class WhatIsNotAReleaseIsNotOne(unittest.TestCase):
 
     def test_nothing_installed_is_not_an_error(self):
         self.assertEqual((), releases(()))
-
-
-class WhetherThereIsAnythingToInstall(unittest.TestCase):
-    INSTALLED = releases(("b10437-cuda13.3", "b10448-cuda13.3"))
-
-    def test_the_build_published_is_the_one_already_here(self):
-        self.assertTrue(current(self.INSTALLED, 10448))
-
-    def test_something_newer_than_what_was_published_is_here(self):
-        """A release built from source, or one published and then withdrawn: what is
-        unpacked is what runs, so there is nothing to install either way."""
-        self.assertTrue(current(self.INSTALLED, 10400))
-
-    def test_the_build_published_is_newer_than_anything_here(self):
-        self.assertFalse(current(self.INSTALLED, 10449))
-
-    def test_nothing_installed_is_never_current(self):
-        self.assertFalse(current((), 10448))
 
 
 class OlderReleasesArePrunedNewestFirst(unittest.TestCase):
@@ -176,6 +160,61 @@ class TheRuntimeIsCarriedOverOnlyFromAReleaseOfTheSameCuda(unittest.TestCase):
 
     def test_none_where_nothing_here_was_built_against_it(self):
         self.assertEqual((), built_against(self.HERE, Cuda(12, 4)))
+
+class WhatRunsIsTheBuildTheSettingsFileRecords(unittest.TestCase):
+    """A router and a slave run the same build or do not talk, so a newer release
+    unpacked beside the recorded one changes nothing until install records it."""
+
+    HERE = releases(("b11070-cuda13.4", "b11065-cuda13.4", "b10976-cuda13.3"))
+
+    def test_the_recorded_build_and_no_other(self):
+        self.assertEqual(["b11065-cuda13.4"],
+                         [one.name for one in to_run(self.HERE, Recorded(11065))])
+
+    def test_a_build_recorded_and_not_here_leaves_nothing_to_run(self):
+        """Not the newest instead: that would be a machine quietly running another
+        build than the one it was set to."""
+        self.assertEqual((), to_run(self.HERE, Recorded(11080)))
+
+    def test_nothing_recorded_runs_the_newest_here_as_before(self):
+        self.assertEqual(["b11070-cuda13.4", "b11065-cuda13.4", "b10976-cuda13.3"],
+                         [one.name for one in to_run(self.HERE, Unrecorded())])
+
+    def test_a_recorded_build_missing_says_how_to_install_it(self):
+        said = unfound(Path("engines"), "llama-server.exe", Recorded(11065))
+
+        self.assertIn("records build 11065", said)
+        self.assertIn("python -m cm.install llamacpp --build 11065", said)
+
+    def test_nothing_here_says_how_to_install_something(self):
+        said = unfound(Path("engines"), "llama-server.exe", Unrecorded())
+
+        self.assertIn("carries llama-server.exe", said)
+        self.assertIn("python -m cm.install llamacpp", said)
+
+
+class AReleaseHeldIsNeverPastKeeping(unittest.TestCase):
+    """The recorded build is what runs, and a build installed by naming it goes by
+    hand."""
+
+    INSTALLED = releases(("b11080-cuda13.4", "b11075-cuda13.4", "b11070-cuda13.4",
+                          "b11065-cuda13.4"))
+
+    def test_a_held_release_past_keeping_stays(self):
+        pruned = prune(self.INSTALLED, 2, running=(), held={"b11065-cuda13.4"})
+
+        self.assertEqual(["b11070-cuda13.4"], [one.name for one in pruned.remove])
+
+    def test_it_is_not_said_to_have_a_server_running_from_it(self):
+        pruned = prune(self.INSTALLED, 2, running=(), held={"b11065-cuda13.4"})
+
+        self.assertEqual((), pruned.spared)
+
+    def test_holding_one_within_keeping_removes_nothing_else(self):
+        pruned = prune(self.INSTALLED, 2, running=(), held={"b11080-cuda13.4"})
+
+        self.assertEqual(["b11070-cuda13.4", "b11065-cuda13.4"],
+                         [one.name for one in pruned.remove])
 
 if __name__ == "__main__":
     unittest.main()

@@ -72,7 +72,9 @@ PATH = (
              settings=False),
     )),
     Stage("6. Another machine lending its card", (
-        Step("install slave", "on it: llama.cpp and its worker (asks for rights)",
+        Step("install llamacpp", "on it: the build the router runs, with --build",
+             settings=True),
+        Step("install slave", "on it: its worker at every boot (asks for rights)",
              settings=True),
         Step("install master", "here: name it in the settings, then calibrate again",
              settings=True),
