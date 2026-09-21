@@ -65,6 +65,15 @@ class Cuda:
 
 
 @dataclass(frozen=True)
+class Driver:
+    """The NVIDIA driver on this machine: its own version, 616.56, and the newest CUDA
+    version it runs."""
+
+    version: str
+    cuda: Cuda
+
+
+@dataclass(frozen=True)
 class NewestRunnable:
     """No CUDA version pinned: the newest one published that this machine's driver
     runs."""

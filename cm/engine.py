@@ -68,11 +68,16 @@ def install(settings: Path, asked: Asked, check: bool, force: bool) -> None:
     print("Installed: " + (", ".join(one.name for one in installed) or "none"))
     print(f"Runs:      {_runs(read.build)}")
 
+    driver = devices.driver()
+    print(f"Driver:    {driver.version}, CUDA {driver.cuda.version}")
+    for one in devices.attached():
+        print(f"Card {one.index}:    {one.card.name}, compute capability "
+              f"{one.capability.major}.{one.capability.minor}")
+
     published = _published(asked)
-    driver = devices.cuda_driver()
-    choice = upstream.choose(read.cuda, published, driver)
+    choice = upstream.choose(read.cuda, published, driver.cuda)
     cuda = choice.cuda
-    print(_chosen(choice, driver))
+    print(_chosen(choice, driver.cuda))
 
     latest = upstream.latest(published, cuda)
     if latest.incomplete:
@@ -84,12 +89,12 @@ def install(settings: Path, asked: Asked, check: bool, force: bool) -> None:
     here = any(one.name == target.name for one in installed) and not force
     alike = releases.built_against(installed, cuda)
 
-    if check:
-        _would(installed, alike, latest, target, here)
-        return
-
     if here and read.build == Recorded(latest.build) and not isinstance(asked, Exactly):
         print(f"{target.name} is here and recorded as the build to run. Nothing to do.")
+        return
+
+    if check:
+        _would(installed, alike, latest, target, here)
         return
 
     print()
@@ -139,8 +144,7 @@ def _chosen(choice: Choice, driver: Cuda) -> str:
     """Which CUDA version the release is for, and why that one."""
     match choice:
         case Newest(cuda):
-            return (f"CUDA {cuda.version}: the newest published that this driver runs "
-                    f"(it runs {driver.version})")
+            return f"CUDA {cuda.version}: the newest published that this driver runs"
         case AsPinned(cuda):
             return f"CUDA {cuda.version}: as cuda_version pins it"
         case Unpublished(pinned, cuda):

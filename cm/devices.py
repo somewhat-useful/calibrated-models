@@ -20,7 +20,7 @@ from .machine import (CARD_FIELDS, Attached, Core, CudaIndex, Installed, Machine
 from .nonempty import NonEmpty
 from .proc import run
 from .units import Mib
-from .upstream import Cuda, supported
+from .upstream import Cuda, Driver, supported
 
 # GetLogicalProcessorInformationEx, RelationProcessorCore: one record per physical core.
 RELATION_PROCESSOR_CORE = 0
@@ -79,16 +79,21 @@ def cards() -> NonEmpty[Installed]:
     monitors are nobody's answer to that: a remote session detaches them, and the driver
     then reports none on any card while the desktop holds what it held.
     """
+    cards_here = attached()
+    first, *rest = (Installed(index=one.index, card=one.card, capability=one.capability,
+                              draws_desktop=drawn, address=one.address)
+                    for one, drawn in zip(cards_here, _desktops(cards_here)))
+    return NonEmpty(first, *rest)
+
+
+def attached() -> NonEmpty[Attached]:
+    """Every card in this machine, as the driver describes it."""
     done = run(("nvidia-smi", f"--query-gpu={CARD_FIELDS}",
                 "--format=csv,noheader,nounits"))
     if not done.out.strip():
         raise UnreadableDevice(f"nvidia-smi said nothing: {done.err.strip()!r}")
 
-    attached = parse_cards(done.out)
-    first, *rest = (Installed(index=one.index, card=one.card, capability=one.capability,
-                              draws_desktop=drawn, address=one.address)
-                    for one, drawn in zip(attached, _desktops(attached)))
-    return NonEmpty(first, *rest)
+    return parse_cards(done.out)
 
 
 def _desktops(attached: Sequence[Attached]) -> tuple[bool, ...]:
@@ -143,6 +148,47 @@ def _ram() -> Mib:
                                "machine has")
 
     return Mib(status.total_phys // 1048576)
+
+
+# How long a driver version NVML writes can be, terminator included: its own
+# NVML_SYSTEM_DRIVER_VERSION_BUFFER_SIZE.
+_DRIVER_VERSION_SIZE = 80
+
+
+def driver() -> Driver:
+    """The NVIDIA driver here: the version it goes by, and the newest CUDA it runs."""
+    return Driver(version=_driver_version(), cuda=cuda_driver())
+
+
+def _driver_version() -> str:
+    """The driver's version, as NVML reports it.
+
+    Asked of NVML rather than of nvidia-smi, whose driver_version field says it is
+    deprecated in favour of one older drivers do not have.
+    """
+    if sys.platform != "win32":
+        raise UnreadableDevice(
+            f"reading this machine is implemented for Windows only, not {sys.platform}")
+
+    try:
+        nvml = ctypes.WinDLL("nvml.dll")
+    except OSError as absent:
+        raise UnreadableDevice("there is no NVIDIA driver here to say which version it "
+                               f"is: {absent}") from None
+
+    status = nvml.nvmlInit_v2()
+    if status != 0:
+        raise UnreadableDevice(f"NVML would not start: it answered {status}")
+
+    try:
+        written = ctypes.create_string_buffer(_DRIVER_VERSION_SIZE)
+        status = nvml.nvmlSystemGetDriverVersion(written, _DRIVER_VERSION_SIZE)
+        if status != 0:
+            raise UnreadableDevice("NVML would not say which version the driver is: it "
+                                   f"answered {status}")
+        return written.value.decode("ascii", "replace")
+    finally:
+        nvml.nvmlShutdown()
 
 
 def cuda_driver() -> Cuda:
