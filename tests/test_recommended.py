@@ -10,8 +10,8 @@ from typing import get_args
 
 from cm import recommended, workspace
 from cm.config import DERIVED, FLAGS
-from cm.recommended import (Advice, Advised, Ambiguous, Recommended,
-                            RecommendedError, Unknown)
+from cm.recommended import (EFFORTS, Advice, Advised, Ambiguous, Recommended,
+                            RecommendedError, Thinking, Unknown, Untold)
 
 CARD = "https://example.invalid/publisher/model"
 
@@ -25,6 +25,17 @@ source = '{CARD}'
 [recommended.'qwen3.8-27b'.settings]
 temp  = '1.0'
 top-k = '20'
+"""
+
+# The same row, for a model somebody has read the chat template of.
+THINKS = f"""
+[recommended.'qwen3.8-27b']
+source = '{CARD}'
+thinking = ['low', 'medium', 'xhigh']
+
+[recommended.'qwen3.8-27b'.settings]
+reasoning = 'on'
+temp      = '1.0'
 """
 
 
@@ -258,6 +269,17 @@ class TheFileInThisRepositoryIsWhatEveryMachineGets(unittest.TestCase):
                                  frozenset(row.settings) & frozenset({"hidden",
                                                                       "manual"}))
 
+    def test_no_row_offers_an_effort_to_a_model_it_turns_reasoning_off_for(self):
+        """The two would contradict each other: a client would be offered levels for a
+        model the row says is to be run without thinking at all."""
+        for row in self.shipped():
+            with self.subTest(row=row.pattern):
+                match row.thinking:
+                    case Thinking(_):
+                        self.assertNotEqual("off", row.settings.get("reasoning", "on"))
+                    case Untold():
+                        pass
+
     def test_every_row_answers_for_the_model_it_names(self):
         """A row shadowed by another is a row nobody can reach, and nothing in the file
         would say so."""
@@ -272,6 +294,55 @@ class TheFileInThisRepositoryIsWhatEveryMachineGets(unittest.TestCase):
                         self.assertEqual(row.pattern, pattern)
                     case other:
                         self.fail(f"answered {other}")
+
+
+class ARowMaySayWhatItsModelCanBeAskedToThinkAt(unittest.TestCase):
+    """The efforts are read off the model's own chat template, which refuses any it does
+    not know -- and the request fails with it. So a guess here is worse than silence, and
+    what is written is held to the efforts a request can carry at all."""
+
+    def test_the_efforts_are_read_as_written(self):
+        self.assertEqual(Thinking(("low", "medium", "xhigh")), rows(THINKS)[0].thinking)
+
+    def test_a_row_that_says_nothing_leaves_the_choice_nowhere(self):
+        self.assertEqual(Untold(), rows(ONE)[0].thinking)
+
+    def test_the_answer_carries_it_to_whoever_asked(self):
+        match recommended.advice(rows(THINKS), "qwen3.8-27b"):
+            case Recommended(_, _, _, thinking):
+                self.assertEqual(Thinking(("low", "medium", "xhigh")), thinking)
+            case other:
+                self.fail(f"answered {other}")
+
+    def test_something_that_is_not_an_effort_is_refused_by_name(self):
+        said = refused(THINKS.replace("'medium'", "'moderate'"))
+
+        self.assertIn("moderate", said)
+        for one in EFFORTS:
+            self.assertIn(one, said)
+
+    def test_a_row_naming_no_effort_at_all_is_refused(self):
+        self.assertIn("thinking", refused(THINKS.replace(
+            "['low', 'medium', 'xhigh']", "[]")))
+
+    def test_one_effort_written_as_itself_rather_than_as_a_list(self):
+        """A single value is the likeliest way this is typed wrongly, and read as a
+        sequence a string would come apart into letters."""
+        self.assertIn("thinking", refused(THINKS.replace(
+            "['low', 'medium', 'xhigh']", "'medium'")))
+
+
+class ARowHoldsThreeThingsAndNothingElse(unittest.TestCase):
+    def test_a_misspelled_key_is_refused_rather_than_ignored(self):
+        said = refused(THINKS.replace("thinking =", "thinkng ="))
+
+        self.assertIn("thinkng", said)
+
+    def test_what_a_row_does_hold_is_named_in_the_refusal(self):
+        said = refused(THINKS.replace("thinking =", "thinkng ="))
+
+        for one in ("source", "settings", "thinking"):
+            self.assertIn(one, said)
 
 
 if __name__ == "__main__":

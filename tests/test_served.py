@@ -6,20 +6,21 @@ and a line invented to suit the parser checks nothing.
 """
 
 import unittest
+from pathlib import PurePosixPath, PureWindowsPath
 
 from cm.served import Served, Unusable, display, flag, read, reply_cap
 from cm.units import Tokens
 from places import somewhere
 
 MODELS = somewhere("models")
+WEIGHTS = MODELS / "unsloth" / "Qwen3.8-27B-GGUF" / "Qwen3.8-27B-UD-IQ4_XS.gguf"
 
 # One model as the router reports it, cut to the flags anything here reads.
 ARGV = ["llama-server", "--no-webui", "--alias", "qwen3.8-52k-q4-mtp",
         "--ctx-size", "52000", "--cache-ram", "32768",
         "--cache-type-k", "q4_0", "--cache-type-v", "q4_0",
         "--flash-attn", "on", "--fit", "off", "--kv-offload",
-        "--model", str(MODELS / "unsloth" / "Qwen3.8-27B-GGUF"
-                       / "Qwen3.8-27B-UD-IQ4_XS.gguf"),
+        "--model", str(WEIGHTS),
         "--n-gpu-layers", "99", "--reasoning", "on",
         "--spec-type", "draft-mtp", "--spec-draft-n-max", "3"]
 
@@ -121,6 +122,7 @@ class AModelIsReadWholeOrNotAtAll(unittest.TestCase):
         self.assertEqual(
             Served(id="qwen3.8-52k-q4-mtp",
                    name="Qwen3.8 27B UD-IQ4_XS, q4 cache, MTP (52k)",
+                   stem="qwen3.8-27b",
                    window=Tokens(52000), cap=Tokens(16384),
                    modalities=("text",), reasoning=True),
             read(entry()))
@@ -159,6 +161,37 @@ class AModelIsReadWholeOrNotAtAll(unittest.TestCase):
         del listed["id"]
 
         self.assertEqual(Unusable("", "an entry with no id"), read(listed))
+
+    def test_a_model_naming_no_file_is_left_out(self):
+        """What the model is is read off the file, so an entry without one says nothing
+        about which model it serves."""
+        weights = flag(ARGV, "--model")
+        argv = [one for one in ARGV if one not in ("--model", weights)]
+
+        self.assertIsInstance(read(entry(argv)), Unusable)
+
+
+class WhatTheModelIsSurvivesTheTripBetweenMachines(unittest.TestCase):
+    """The router runs where the card is and a client runs wherever it likes, so the
+    separators in the answer are the router's and not the reader's."""
+
+    def named(self, place) -> str:
+        argv = [one if one != flag(ARGV, "--model") else str(place) for one in ARGV]
+
+        return read(entry(argv)).stem
+
+    def test_a_file_named_the_way_windows_names_one(self):
+        self.assertEqual("qwen3.8-27b", self.named(PureWindowsPath(WEIGHTS)))
+
+    def test_a_file_named_the_way_everything_else_does(self):
+        self.assertEqual("qwen3.8-27b", self.named(PurePosixPath(WEIGHTS)))
+
+    def test_the_repository_directory_has_the_last_word_where_it_says_more(self):
+        """Its name carries a variant the file name drops, which is the model it is."""
+        thinking = PureWindowsPath(MODELS, "unsloth", "Qwen3.8-27B-Thinking-GGUF",
+                                   "Qwen3.8-27B-UD-IQ4_XS.gguf")
+
+        self.assertEqual("qwen3.8-27b-thinking", self.named(thinking))
 
 
 if __name__ == "__main__":

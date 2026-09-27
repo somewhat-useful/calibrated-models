@@ -40,18 +40,16 @@ def names(key: str, chosen: Sequence[Settings],
           ways: Sequence[Variant]) -> tuple[Profile, ...]:
     """Every profile of one model, named.
 
-    The window is what tells profiles apart, so it is written only where there is
-    something to tell apart: a model with a single profile is served without it, since
-    gemma4-12b-262k would be noise on a model that has no other way to run. What a
-    profile gives up is written however many there are.
+    The window goes into every name, a single profile's included. It is what a person
+    chooses by, and a name carrying it only while there was something to compare against
+    would move the day another profile appeared or stopped being placed: whether a slave's
+    card answers decides which profiles there are, not what the rest of them are called,
+    and a client holding a name knows nothing about the others.
 
     ways is every way the file may run here. A head left out is said only where running
     one was among them: a file carrying none, a head ruled out by hand, and a mixture,
     which never runs one, have given nothing up.
     """
-    if len(chosen) == 1:
-        return (Profile(f"{key}{_given_up(chosen[0], ways)}", chosen[0]),)
-
     return tuple(Profile(f"{key}-{settings.ctx // THOUSAND}k{_given_up(settings, ways)}",
                          settings)
                  for settings in chosen)

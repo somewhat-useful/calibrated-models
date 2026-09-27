@@ -89,25 +89,43 @@ def across(devices, ctx, cache=CacheType.Q8_0, head=False):
                                   among=Among.SEVERAL))
 
 
-class ASingleProfileIsTheModelItself(unittest.TestCase):
-    """One way to run a model needs no window to tell it apart from the others."""
+class ASingleProfileIsNamedLikeAnyOther(unittest.TestCase):
+    """A name must not depend on how many other profiles were placed beside it: whether a
+    slave's card answers decides what there is to run, not what any of it is called."""
 
-    def test_one_profile_giving_nothing_up_is_named_by_the_key_alone(self):
+    def test_one_profile_carries_its_window(self):
         named = names("ornith-1.5-35b", (profile(131000),), HEADLESS)
 
-        self.assertEqual(["ornith-1.5-35b"], [one.name for one in named])
+        self.assertEqual(["ornith-1.5-35b-131k"], [one.name for one in named])
 
-    def test_one_profile_carries_no_window_whatever_it_holds(self):
+    def test_one_profile_carries_its_window_whatever_else_it_holds(self):
         for settings in EVERY_SHAPE:
             with self.subTest(settings=settings):
                 named = names("gemma4-12b", (settings,), HEADED)
 
-                self.assertNotIn(f"{settings.ctx // name.THOUSAND}k", named[0].name)
+                self.assertIn(f"{settings.ctx // name.THOUSAND}k", named[0].name)
 
-    def test_what_one_profile_gives_up_is_still_said(self):
+    def test_what_one_profile_gives_up_is_said_after_its_window(self):
         named = names("gemma4-12b", (profile(25000, CacheType.Q4_0),), HEADED)
 
-        self.assertEqual(["gemma4-12b-q4-nomtp"], [one.name for one in named])
+        self.assertEqual(["gemma4-12b-25k-q4-nomtp"], [one.name for one in named])
+
+    def test_a_profile_keeps_its_name_when_a_slaves_card_stops_answering(self):
+        """The one that goes on being placed is served under the name it always had."""
+        here = across((SLOW, FAST), 82000)
+        lent = across((SLAVE, SLOW, FAST), 215000)
+
+        self.assertEqual(["qwen3.8-82k-2gpu", "qwen3.8-215k-rpc"],
+                         [one.name for one in names("qwen3.8", (here, lent), HEADLESS)])
+        self.assertEqual(["qwen3.8-82k-2gpu"],
+                         [one.name for one in names("qwen3.8", (here,), HEADLESS)])
+
+    def test_every_profile_is_named_the_same_alone_as_among_others(self):
+        for one in names("qwen3.8", EVERY_SHAPE, HEADED):
+            with self.subTest(name=one.name):
+                alone = names("qwen3.8", (one.settings,), HEADED)
+
+                self.assertEqual(one.name, alone[0].name)
 
     def test_no_profiles_are_named_nothing_rather_than_the_key(self):
         self.assertEqual((), names("qwen3.8-q4km", (), HEADED))
@@ -228,7 +246,7 @@ class TheCardsPastTheFirstAreSaid(unittest.TestCase):
     def test_one_profile_on_two_of_this_machines_cards_says_two(self):
         named = names("ornith-1.5-35b", (across((SLOW, FAST), 150000),), HEADLESS)
 
-        self.assertEqual(["ornith-1.5-35b-2gpu"], [one.name for one in named])
+        self.assertEqual(["ornith-1.5-35b-150k-2gpu"], [one.name for one in named])
 
     def test_a_name_ends_in_rpc_exactly_when_a_slaves_card_is_used(self):
         chosen = (profile(25000, head=True), across((SLOW, FAST), 60000, head=True),
@@ -255,7 +273,7 @@ class TheCardsPastTheFirstAreSaid(unittest.TestCase):
     def test_a_single_profile_on_a_slaves_card_is_the_key_and_rpc(self):
         named = names("ornith-1.5-35b", (across((SLAVE, SLOW, FAST), 150000),), HEADLESS)
 
-        self.assertEqual(["ornith-1.5-35b-rpc"], [one.name for one in named])
+        self.assertEqual(["ornith-1.5-35b-150k-rpc"], [one.name for one in named])
 
     def test_the_same_numbers_here_and_across_a_slave_are_two_names(self):
         named = names("qwen3.8", (across((SLOW, FAST), 120000),

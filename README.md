@@ -341,6 +341,21 @@ line. What the page leaves open is filled in from a neutral floor — `min-p 0`,
 penalties off — rather than from llama.cpp's own `min-p 0.05`, `top-k 40` and
 `temp 0.8`, which are not silence but somebody else's answer.
 
+A row may also name the reasoning efforts the model's chat template takes:
+
+```toml
+[recommended.'qwen3.8-27b']
+source = 'https://huggingface.co/...'
+thinking = ['low', 'medium', 'xhigh']
+```
+
+That one is not a sampler value and is never written into a settings file: it is what a
+client may ask for on each request, and `pi` hands it to the pi agent as the levels that
+model offers — those, and off, which llama.cpp answers itself by switching thinking off
+before the template is asked anything. A template refuses an effort it does not know and
+the request fails with it, so only efforts read off the model belong here. A row that
+names none leaves every client on the `reasoning-effort` the settings file chose.
+
 What happens to an entry when `scan` runs is decided by the entry:
 
 | the entry | what happens |
@@ -491,6 +506,11 @@ beside it behind what the
 [context-policy](https://github.com/somewhat-useful/context-policy) extension will
 compute -- see below. Every other provider in that file is left exactly as it was, and a
 dated backup is kept. `--preview` prints what it would write and writes nothing.
+
+A model whose row in `recommended.toml` names the efforts its chat template takes is
+listed with exactly those as the thinking levels it offers, so the level picked inside pi
+is the one every request carries. A model with no such row is listed without them, pi
+sends no effort at all for it, and the `reasoning-effort` in the preset stands.
 
 Any other OpenAI-compatible client needs no script at all: point it at
 `http://<the machine>:18081/v1`.

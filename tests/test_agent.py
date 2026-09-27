@@ -8,8 +8,10 @@ own reasons stands until it stops working.
 import copy
 import unittest
 
-from cm.agent import UnknownShape, compacted, empty, pointed
+from cm.agent import (OFF, REASONING_EFFORT, Offering, UnknownShape, compacted, empty,
+                      pointed)
 from cm.policy import Bound, Room
+from cm.recommended import EFFORTS, Thinking, Untold
 from cm.served import Router, Served
 from cm.units import Tokens
 
@@ -22,11 +24,18 @@ ROOM = Room(reserve=Bound(most=Tokens(8399), take=Tokens(8000)),
 
 
 def served(id, cap=16384, window=52000) -> Served:
-    return Served(id=id, name=f"{id} for people", window=Tokens(window),
+    return Served(id=id, name=f"{id} for people", stem=id, window=Tokens(window),
                   cap=Tokens(cap), modalities=("text",), reasoning=True)
 
 
-MODELS = (served("qwen3.8-52k-q4-mtp"), served("gemma4-12b", cap=32768, window=262144))
+def offered(id, thinking=Untold(), **rest) -> Offering:
+    """One model as this command hands it over: what the router serves, and whether
+    anything says what that model may be asked to think at."""
+    return Offering(served(id, **rest), thinking)
+
+
+MODELS = (offered("qwen3.8-52k-q4-mtp"),
+          offered("gemma4-12b", cap=32768, window=262144))
 
 # Another provider, of the kind this program knows nothing about. It has to come back
 # exactly as it went in.
@@ -147,7 +156,8 @@ class TheModelListIsWrittenNotMerged(unittest.TestCase):
                           MODELS)
         listed = written.document["providers"]["llamacpp-cuda"]["models"]
 
-        self.assertEqual([one.id for one in MODELS], [one["id"] for one in listed])
+        self.assertEqual([one.served.id for one in MODELS],
+                         [one["id"] for one in listed])
 
     def test_every_field_pi_reads_is_there(self):
         written = pointed(config(), HERE, "llamacpp-cuda", MODELS)
@@ -160,6 +170,52 @@ class TheModelListIsWrittenNotMerged(unittest.TestCase):
                           "input": ["text"],
                           "reasoning": True},
                          first)
+
+
+class AModelIsOfferedTheEffortsItsOwnTemplateTakes(unittest.TestCase):
+    """pi offers every level it knows of unless a model's map says otherwise, and sends
+    the one picked through as it stands. A template refuses an effort it does not know and
+    the request fails with it, so what pi is told has to be what the model answers to."""
+
+    def listed(self, thinking) -> dict:
+        written = pointed(config(), HERE, "llamacpp-cuda",
+                          (offered("qwen3.8-52k-q4-mtp", thinking),))
+
+        return written.document["providers"]["llamacpp-cuda"]["models"][0]
+
+    def test_what_the_template_takes_is_what_is_offered(self):
+        self.assertEqual({"off": "none", "minimal": None, "low": "low",
+                          "medium": "medium", "high": None, "xhigh": "xhigh",
+                          "max": None},
+                         self.listed(Thinking(("low", "medium", "xhigh")))["thinkingLevelMap"])
+
+    def test_every_level_there_is_gets_an_answer(self):
+        """One left out of the map is one pi offers and passes through as it stands."""
+        listed = self.listed(Thinking(("medium",)))
+
+        self.assertEqual(frozenset((OFF, *EFFORTS)), frozenset(listed["thinkingLevelMap"]))
+
+    def test_a_model_that_may_be_asked_says_so_for_itself(self):
+        self.assertEqual({REASONING_EFFORT: True},
+                         self.listed(Thinking(("medium",)))["compat"])
+
+    def test_no_thinking_at_all_is_not_the_templates_to_answer(self):
+        """llama.cpp switches thinking off before the template is asked anything, so this
+        is the one level every model can be offered."""
+        self.assertEqual("none", self.listed(Thinking(("medium",)))["thinkingLevelMap"][OFF])
+
+    def test_a_model_nobody_has_read_the_template_of_is_left_as_it_runs(self):
+        listed = self.listed(Untold())
+
+        self.assertNotIn("thinkingLevelMap", listed)
+        self.assertNotIn("compat", listed)
+
+    def test_the_provider_leaves_the_choice_to_each_model(self):
+        """A model carrying nothing must not be able to choose by way of the provider."""
+        written = pointed(config(), HERE, "llamacpp-cuda", MODELS)
+
+        provider = written.document["providers"]["llamacpp-cuda"]
+        self.assertIs(False, provider["compat"][REASONING_EFFORT])
 
 
 class PiMustCompactLaterThanThePolicyDoes(unittest.TestCase):

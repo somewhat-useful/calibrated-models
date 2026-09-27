@@ -12,6 +12,12 @@
 # chose: min-p 0.05, top-k 40 and temp 0.8 are not silence, they are somebody else's
 # answer. So every row can be read against the page it names, line for line.
 #
+# A row may also name, in thinking, the reasoning efforts the model's chat template takes.
+# That is not a sampler value and it is not written into a settings file: it is what a
+# client may ask for per request. A template refuses an effort it does not know and the
+# request fails with it, so only efforts read off the model itself belong here. A row that
+# names none leaves every client on the effort the machine's settings chose.
+#
 # A row is looked up by a model's stem -- the file name with the quantisation left off,
 # lowercased, taking the repository directory's word where that says more:
 #
@@ -79,8 +85,13 @@ top-p = '0.95'
 # running it without. reasoning-effort is the page's own default, and preserved thinking
 # is on by default there too, which it calls especially beneficial for agent scenarios.
 # Both publishers' repackagings share this stem, so this one row covers them.
+#
+# The three efforts are the three the page names, and its chat template takes those and
+# nothing else -- it refuses anything outside them outright. So a client is offered these
+# and off, and xhigh below is what it gets where it asks for nothing.
 [recommended.'qwen3.8-27b']
 source = 'https://huggingface.co/Qwen/Qwen3.8-27B'
+thinking = ['low', 'medium', 'xhigh']
 
 [recommended.'qwen3.8-27b'.settings]
 min-p              = '0'

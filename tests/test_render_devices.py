@@ -32,34 +32,37 @@ def across(devices, layers, spare, halvings=0, pipeline=Pipeline.ON, ctx=150000,
                                   among=among))
 
 
-def section(settings, named="model"):
+def section(settings):
+    """The one section written for the one model placed, whatever its window named it."""
     _, parsed = read(preset(config(), MACHINE, MEMORY, (placed("model", settings),)))
-    return parsed[named]
+    one, = (named for named in parsed.sections() if named != "*")
+
+    return parsed[one]
 
 
 class TheSectionSaysWhereTheLayersGo(unittest.TestCase):
     def test_devices_counts_and_splitting_are_written(self):
-        written = section(across((SLOW, FAST), (25, 41), (1024, 2048)), named="model-2gpu")
+        written = section(across((SLOW, FAST), (25, 41), (1024, 2048)))
 
         self.assertEqual("CUDA1,CUDA0", written["device"])
         self.assertEqual("layer", written["split-mode"])
         self.assertEqual("25,41", written["tensor-split"])
 
     def test_the_cards_running_together_override_nothing(self):
-        written = section(across((SLOW, FAST), (25, 41), (1024, 2048)), named="model-2gpu")
+        written = section(across((SLOW, FAST), (25, 41), (1024, 2048)))
 
         self.assertNotIn("override-tensor", written)
         self.assertNotIn("rpc", written)
 
     def test_cards_kept_apart_are_kept_apart_by_an_override_that_moves_nothing(self):
         written = section(across((SLOW, FAST), (25, 41), (1024, 2048),
-                                 pipeline=Pipeline.OFF), named="model-2gpu")
+                                 pipeline=Pipeline.OFF))
 
         self.assertEqual(f"{NO_TENSOR}=CUDA1", written["override-tensor"])
 
     def test_a_slaves_card_is_reached_through_its_worker_and_overrides_nothing(self):
         written = section(across((SLAVE, SLOW, FAST), (24, 15, 27), (2048, 1024, 2048),
-                                 pipeline=Pipeline.OFF), named="model-rpc")
+                                 pipeline=Pipeline.OFF))
 
         self.assertEqual("worker:50052", written["rpc"])
         self.assertEqual("RPC0,CUDA1,CUDA0", written["device"])
@@ -68,15 +71,13 @@ class TheSectionSaysWhereTheLayersGo(unittest.TestCase):
 
 class TheMicroBatchIsWrittenWhereItIsNotTheSharedOne(unittest.TestCase):
     def test_a_halved_micro_batch_is_written_as_the_size_it_runs_at(self):
-        written = section(across((SLOW, FAST), (25, 41), (1024, 2048), halvings=2),
-                          named="model-2gpu")
+        written = section(across((SLOW, FAST), (25, 41), (1024, 2048), halvings=2))
 
         self.assertEqual("128", written["ubatch-size"])
 
     def test_the_shared_one_is_not_repeated(self):
         self.assertNotIn("ubatch-size",
-                         section(across((SLOW, FAST), (25, 41), (1024, 2048)),
-                                 named="model-2gpu"))
+                         section(across((SLOW, FAST), (25, 41), (1024, 2048))))
 
 
 class EveryDeviceSaysWhatItWillHold(unittest.TestCase):
@@ -84,7 +85,7 @@ class EveryDeviceSaysWhatItWillHold(unittest.TestCase):
         text = preset(config(), MACHINE, MEMORY,
                       (placed("model", across((SLAVE, SLOW, FAST), (24, 15, 27),
                                               (2048, 1024, 2048), pipeline=Pipeline.OFF)),))
-        said = stated(text)["model-rpc"]
+        said = stated(text)["model-150k-rpc"]
 
         self.assertEqual(1, len(said))
         self.assertIn(f"{REQUIRED}: {12288 - 2048} MiB on RPC0, {8192 - 1024} MiB on CUDA1, "
@@ -109,7 +110,7 @@ class OneCardOfSeveralIsNamed(unittest.TestCase):
                       (placed("model", across((FAST,), (66,), (5308,),
                                               pipeline=Pipeline.OFF)),))
 
-        self.assertIn(f"{REQUIRED}: {16303 - 5308} MiB on CUDA0", stated(text)["model"][0])
+        self.assertIn(f"{REQUIRED}: {16303 - 5308} MiB on CUDA0", stated(text)["model-150k"][0])
 
     def test_a_machines_only_card_is_not_named(self):
         written = section(across((FAST,), (66,), (1024,), pipeline=Pipeline.OFF,

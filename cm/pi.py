@@ -4,6 +4,10 @@ Runs on the machine that calls the models rather than the one that holds them, s
 reads no card, no settings file and no preset. It asks the router what it serves and
 believes the answer: the two cannot come to disagree, because there is only one of them.
 
+The one thing it reads beside that answer is this repository's own recommendations, which
+are nobody's machine: what a model's chat template takes is the same wherever that model
+runs, and it is what lets a client be offered the efforts it can actually ask for.
+
 The loop is here and it decides nothing. served.py reads the router's answer, policy.py
 says what room pi's context-policy extension leaves, agent.py says what pi's two files
 should hold, and this asks, writes and reports.
@@ -17,8 +21,10 @@ import urllib.request
 from collections.abc import Sequence
 from pathlib import Path
 
-from . import agent, files, policy
-from .agent import UnknownShape
+from . import agent, files, policy, reading, recommended, workspace
+from .agent import Offering, UnknownShape
+from .recommended import (Ambiguous, Recommended, RecommendedError, Row, Thinking, Told,
+                          Unknown, Untold)
 from .refusal import Refusal
 from .served import Router, Served, Unusable, read
 
@@ -41,7 +47,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         _point(_router(given.server, given.port), given.config, given.provider,
                given.backups, given.preview)
-    except (Refusal, UnknownShape) as refusal:
+    except (Refusal, RecommendedError, UnknownShape) as refusal:
         print(refusal, file=sys.stderr)
         return 1
 
@@ -75,9 +81,11 @@ def _point(router: Router, config: Path, provider: str, backups: int,
     print(f"Asking the router at {router.base_url} what it serves ...")
 
     models = _serving(router)
-    for one in models:
-        print(f"  {one.id:<24} {one.window:>7} tokens, reply up to {one.cap:>6}"
-              f"   {one.name}")
+    offered = _offered(reading.rows(), models)
+    for one in offered:
+        served = one.served
+        print(f"  {served.id:<24} {served.window:>7} tokens, reply up to {served.cap:>6}"
+              f"   {served.name}{_asked(one.thinking)}")
 
     if not files.exists(config):
         raise Refusal(
@@ -85,7 +93,7 @@ def _point(router: Router, config: Path, provider: str, backups: int,
             "Install pi and start it once so it writes its configuration, then run this "
             "again. If it keeps its files elsewhere, pass --config.")
 
-    listed = agent.pointed(_document(config), router, provider, models)
+    listed = agent.pointed(_document(config), router, provider, offered)
 
     settings = config.parent / SETTINGS
     held = _compaction(settings, models)
@@ -100,6 +108,39 @@ def _point(router: Router, config: Path, provider: str, backups: int,
 
     print("Check it inside pi with /context-policy: it flags a mismatch with a line "
           "starting '!'.")
+
+
+def _offered(rows: Sequence[Row], models: Sequence[Served]) -> tuple[Offering, ...]:
+    """Every model the router serves, with what a client may ask it to think at.
+
+    A repository saying two different things about one model is not this command's to
+    correct -- it points a client at a router -- so it says which rows disagree and leaves
+    that model on the effort the router was started with, as for a model no row covers.
+    """
+    offered = []
+
+    for one in models:
+        match recommended.advice(rows, one.stem):
+            case Recommended(_, _, _, thinking):
+                offered.append(Offering(one, thinking))
+            case Unknown(_):
+                offered.append(Offering(one, Untold()))
+            case Ambiguous(stem, patterns):
+                print(f"  ! {stem}: {len(patterns)} rows of the same reach in "
+                      f"{workspace.RECOMMENDED} -- {', '.join(patterns)} -- so it is "
+                      "left on the effort the router was started with")
+                offered.append(Offering(one, Untold()))
+
+    return tuple(offered)
+
+
+def _asked(thinking: Told) -> str:
+    """What a client may ask one model to think at, as it reads at the end of its line."""
+    match thinking:
+        case Thinking(efforts):
+            return f"   thinking: {', '.join((agent.OFF, *efforts))}"
+        case Untold():
+            return ""
 
 
 def _compaction(settings: Path, models: Sequence[Served]) -> agent.Written:

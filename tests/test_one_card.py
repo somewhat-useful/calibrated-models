@@ -169,7 +169,7 @@ spec-draft-type-v = q4_0
 spec-type = draft-mtp
 temp = 1.0
 
-[mixture]
+[mixture-131k]
 ; VRAM REQUIRED: 15281 MiB of video memory, held from the moment this profile loads
 model = {mixture}
 cache-ram = 50176
@@ -181,7 +181,7 @@ gpu-layers = 99
 n-cpu-moe = 16
 temp = 1.0
 
-[short]
+[short-20k]
 ; VRAM REQUIRED: 742 MiB of video memory, held from the moment this profile loads
 model = {short}
 cache-ram = 56320

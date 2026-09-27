@@ -116,8 +116,8 @@ class TheFileHasTheShapeARouterExpects(unittest.TestCase):
         _, parsed = read(preset(config(), MACHINE, MEMORY, (DENSE, MIXTURE)))
 
         self.assertIn("*", parsed)
-        self.assertIn("ornith-1.5-35b", parsed)
-        self.assertEqual("131000", parsed["ornith-1.5-35b"]["ctx-size"])
+        self.assertIn("ornith-1.5-35b-131k", parsed)
+        self.assertEqual("131000", parsed["ornith-1.5-35b-131k"]["ctx-size"])
 
     def test_the_version_stands_before_the_first_section(self):
         preamble, _ = read(preset(config(), MACHINE, MEMORY, (DENSE,)))
@@ -162,7 +162,7 @@ class EveryProfileBecomesOneSection(unittest.TestCase):
     def test_each_profile_appears_once_under_its_own_name(self):
         _, parsed = read(preset(config(), MACHINE, MEMORY, (DENSE, MIXTURE)))
 
-        self.assertEqual(["*", "ornith-1.5-35b", "qwen3.8-33k",
+        self.assertEqual(["*", "ornith-1.5-35b-131k", "qwen3.8-33k",
                           "qwen3.8-45k-nomtp", "qwen3.8-62k-q4",
                           "qwen3.8-85k-q4-nomtp"],
                          parsed.sections())
@@ -174,13 +174,15 @@ class EveryProfileBecomesOneSection(unittest.TestCase):
         self.assertNotIn("qwen3.8-q4km", parsed.sections())
 
     def test_two_models_claiming_one_name_are_refused(self):
-        """A key may be anything, so a key may be another model's profile name."""
-        clash = placed("qwen3.8-45k-nomtp", settings(45000))
+        """Every name carries its window, so no key can reach another model's profile
+        name any more; what is left is two models keyed the same, and one of them would
+        be written and the other dropped without a word."""
+        clash = placed("qwen3.8", settings(33000, head=True))
 
         with self.assertRaises(ConfigError) as refusal:
             preset(config(), MACHINE, MEMORY, (DENSE, clash))
 
-        self.assertEqual("duplicate section: qwen3.8-45k-nomtp", str(refusal.exception))
+        self.assertEqual("duplicate section: qwen3.8-33k", str(refusal.exception))
 
 
 class ThePlacementIsWrittenOutInFull(unittest.TestCase):
@@ -208,7 +210,7 @@ class ThePlacementIsWrittenOutInFull(unittest.TestCase):
     def test_experts_are_named_where_they_sit_on_the_cpu_and_nowhere_else(self):
         _, parsed = read(preset(config(), MACHINE, MEMORY, (DENSE, MIXTURE)))
 
-        self.assertEqual("15", parsed["ornith-1.5-35b"]["n-cpu-moe"])
+        self.assertEqual("15", parsed["ornith-1.5-35b-131k"]["n-cpu-moe"])
         for name in ("qwen3.8-33k", "qwen3.8-45k-nomtp", "qwen3.8-85k-q4-nomtp"):
             with self.subTest(section=name):
                 self.assertNotIn("n-cpu-moe", parsed[name])
@@ -220,7 +222,7 @@ class ThePlacementIsWrittenOutInFull(unittest.TestCase):
         self.assertEqual("draft-mtp", drafting["spec-type"])
         self.assertEqual(str(render.DRAFT_LOOKAHEAD), drafting["spec-draft-n-max"])
 
-        for name in ("qwen3.8-45k-nomtp", "ornith-1.5-35b"):
+        for name in ("qwen3.8-45k-nomtp", "ornith-1.5-35b-131k"):
             with self.subTest(section=name):
                 self.assertNotIn("spec-type", parsed[name])
                 self.assertNotIn("spec-draft-n-max", parsed[name])
@@ -312,7 +314,7 @@ class EachModelIsLeftTheCacheItsOwnWeightsDoNotTake(unittest.TestCase):
 
         expected = system_memory(Fitted(), MACHINE, Mib(45440)).cache
 
-        self.assertEqual(str(expected), parsed["ornith-1.5-35b"]["cache-ram"])
+        self.assertEqual(str(expected), parsed["ornith-1.5-35b-131k"]["cache-ram"])
 
     def test_a_model_holding_nothing_keeps_the_whole_cache(self):
         _, parsed = read(preset(config(), MACHINE, MEMORY, (DENSE, self.HEAVY)))
@@ -321,7 +323,7 @@ class EachModelIsLeftTheCacheItsOwnWeightsDoNotTake(unittest.TestCase):
 
         self.assertEqual(str(whole), parsed["qwen3.8-45k-nomtp"]["cache-ram"])
         self.assertGreater(int(parsed["qwen3.8-45k-nomtp"]["cache-ram"]),
-                           int(parsed["ornith-1.5-35b"]["cache-ram"]))
+                           int(parsed["ornith-1.5-35b-131k"]["cache-ram"]))
 
     def test_every_profile_of_one_model_is_given_the_same_room(self):
         _, parsed = read(preset(config(), MACHINE, MEMORY, (DENSE,)))
@@ -364,7 +366,7 @@ class EverySectionSaysWhatItWillHold(unittest.TestCase):
 
         said = stated(preset(config(), MACHINE, MEMORY, (one,)))
 
-        self.assertIn(f"{16303 - 6018} MiB", said["gemma4-12b"][0])
+        self.assertIn(f"{16303 - 6018} MiB", said["gemma4-12b-262k"][0])
 
     def test_two_profiles_leaving_different_room_state_different_figures(self):
         """Without this the test above passes on a constant that happens to match."""
@@ -372,7 +374,7 @@ class EverySectionSaysWhatItWillHold(unittest.TestCase):
                              (placed("close", settings(45000, spare=1024)),
                               placed("roomy", settings(45000, spare=6018)))))
 
-        self.assertNotEqual(said["close"][0], said["roomy"][0])
+        self.assertNotEqual(said["close-45k"][0], said["roomy-45k"][0])
 
     def test_an_ini_reader_is_never_handed_it(self):
         _, parsed = read(preset(config(), MACHINE, MEMORY, (DENSE, MIXTURE)))

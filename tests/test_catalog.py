@@ -114,8 +114,8 @@ class WhatCalibrateWritesIsWhatVramReads(unittest.TestCase):
                                  settings(131000, placement=ExpertsOnCpu(Layers(15)),
                                           spare=968))))
 
-        self.assertEqual((Loadable("gemma4-12b", Mib(16303 - 6018)),
-                          Loadable("ornith-1.0-35b", Mib(16303 - 968))),
+        self.assertEqual((Loadable("gemma4-12b-262k", Mib(16303 - 6018)),
+                          Loadable("ornith-1.0-35b-131k", Mib(16303 - 968))),
                          parse(written, CARD))
 
     def test_every_profile_of_a_model_comes_back_under_its_own_name(self):

@@ -23,8 +23,9 @@ PUBLISHED = ((8192, 2048, 5735, 2007),
 
 
 def served(window, cap) -> Served:
-    return Served(id=f"{window}-{cap}", name="a model", window=Tokens(window),
-                  cap=Tokens(cap), modalities=("text",), reasoning=True)
+    return Served(id=f"{window}-{cap}", name="a model", stem="a-model",
+                  window=Tokens(window), cap=Tokens(cap), modalities=("text",),
+                  reasoning=True)
 
 
 # The profiles this machine's router serves. The shortest window carries the smallest

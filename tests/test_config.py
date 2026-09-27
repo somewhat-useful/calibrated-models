@@ -18,7 +18,7 @@ from cm.library import Key
 from cm.lmstudio import Found, Missing
 from cm.machine import Fitted, Fixed, Share
 from cm.place import CacheType
-from cm.recommended import Recommended, Unknown
+from cm.recommended import Recommended, Unknown, Untold
 from cm.releases import Recorded, Unrecorded
 from cm.serving import (DEFAULT_HOST, DEFAULT_IDLE, DEFAULT_PORT,
                         DEFAULT_RESIDENT)
@@ -533,7 +533,8 @@ QWEN_FILE = PureWindowsPath("unsloth", "Qwen3.8-27B-GGUF", "Qwen3.8-27B-UD-IQ4_X
 # is what the floor is for.
 PUBLISHED = Recommended(settings={"temp": "0.6", "top-k": "20"},
                         source="https://example.invalid/card",
-                        pattern="qwen3.8-27b")
+                        pattern="qwen3.8-27b",
+                        thinking=Untold())
 
 # What the entry should then run on.
 OVER_THE_FLOOR = {**NEUTRAL, **PUBLISHED.settings}

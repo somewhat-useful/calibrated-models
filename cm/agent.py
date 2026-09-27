@@ -14,15 +14,27 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from .policy import Room
+from .recommended import EFFORTS, Thinking, Told, Untold
 from .served import Router, Served
+
+# Whether a client may choose the reasoning effort for itself. The one flag of the shape
+# below a single model may answer differently -- pi reads what a model says over what its
+# provider said -- and false for the provider, so that a model whose chat template nobody
+# has read is left on the effort the router was started with.
+REASONING_EFFORT = "supportsReasoningEffort"
 
 # The shape pi fixes for a provider, and what llama.cpp's OpenAI endpoint supports. The
 # same wherever it runs, so it is written down rather than asked.
 COMPAT = {"supportsDeveloperRole": False,
-          "supportsReasoningEffort": False,
+          REASONING_EFFORT: False,
           "supportsStore": False,
           "supportsStrictMode": False,
           "maxTokensField": "max_tokens"}
+
+# What pi calls asking for no thinking at all, and what a request carries to ask for it.
+# llama.cpp answers this one itself, switching thinking off before the model's template is
+# asked anything, so it is the level no row has to name and every model can be offered.
+OFF, NONE = "off", "none"
 
 API = "openai-completions"
 
@@ -32,6 +44,15 @@ KEY = "llama.cpp"
 
 class UnknownShape(Exception):
     """A configuration of pi's this does not know how to edit, and what it expected."""
+
+
+@dataclass(frozen=True)
+class Offering:
+    """One model as a client is to be told about it: what the router serves, and what
+    this repository says a client may ask that model to think at."""
+
+    served: Served
+    thinking: Told
 
 
 @dataclass(frozen=True)
@@ -54,7 +75,7 @@ def empty() -> dict[str, object]:
 
 
 def pointed(document: Mapping[str, object], router: Router, fallback: str,
-            models: Sequence[Served]) -> Written:
+            offered: Sequence[Offering]) -> Written:
     """pi's models.json, with this router's provider rewritten and no other touched.
 
     Which provider is this router: the one already pointing at it, else the one named,
@@ -89,7 +110,7 @@ def pointed(document: Mapping[str, object], router: Router, fallback: str,
     # The address just given wins: it is the reason this was run. Everything else about
     # an existing provider is left alone -- compat flags someone set by hand are theirs.
     provider["baseUrl"] = router.base_url
-    provider["models"] = [_model(one) for one in models]
+    provider["models"] = [_model(one) for one in offered]
 
     return Written(written, tuple(changes))
 
@@ -177,11 +198,35 @@ def _count(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value > 0
 
 
-def _model(served: Served) -> dict[str, object]:
-    """One model as pi lists it."""
-    return {"id": served.id,
-            "name": served.name,
-            "contextWindow": served.window,
-            "maxTokens": served.cap,
-            "input": list(served.modalities),
-            "reasoning": served.reasoning}
+def _model(offering: Offering) -> dict[str, object]:
+    """One model as pi lists it, with the efforts it may be asked for where they are
+    known. A model whose template nobody has read is listed without them, and pi then
+    sends no effort at all: what the router was started with stands."""
+    served = offering.served
+    listed: dict[str, object] = {"id": served.id,
+                                 "name": served.name,
+                                 "contextWindow": served.window,
+                                 "maxTokens": served.cap,
+                                 "input": list(served.modalities),
+                                 "reasoning": served.reasoning}
+
+    match offering.thinking:
+        case Untold():
+            return listed
+        case Thinking(efforts):
+            return {**listed,
+                    "thinkingLevelMap": _levels(efforts),
+                    "compat": {REASONING_EFFORT: True}}
+
+
+def _levels(efforts: Sequence[str]) -> dict[str, object]:
+    """What each level a person can pick in pi carries in a request.
+
+    Every level pi knows of is named here, because one left out of the map is one pi
+    offers and passes through as it stands: null is how it is told not to offer a level at
+    all. So a model is offered the efforts its own template takes and nothing else, and
+    off, which llama.cpp answers rather than the template.
+    """
+    taken = frozenset(efforts)
+
+    return {OFF: NONE, **{one: (one if one in taken else None) for one in EFFORTS}}

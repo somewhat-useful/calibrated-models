@@ -99,7 +99,7 @@ def _scan(settings: Path, force: bool) -> None:
     if not files.exists(read.model_root):
         raise ConfigError(f"model_root does not exist: {read.model_root}")
 
-    rows = recommended.parse(files.read(_shipped()), config.DERIVED | config.FLAGS)
+    rows = reading.rows()
 
     named = read.models + read.withheld
     gone = tuple(one for one in named if not files.exists(one.path))
@@ -199,15 +199,6 @@ def _keys(named: Sequence[Model], renames: Sequence[Rename],
     written = {one.was: one.now for one in renames if one.was not in left_alone}
 
     return {one.key: written.get(one.key, one.key) for one in named}
-
-
-def _shipped() -> Path:
-    where = workspace.recommended()
-    if not files.exists(where):
-        raise RecommendedError(
-            f"{workspace.RECOMMENDED} is not in this copy of the repository: {where}")
-
-    return where
 
 
 def _writing(rows: Sequence[Row], key: str, place: PurePath) -> Writing:

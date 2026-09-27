@@ -15,7 +15,9 @@ import math
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import PurePosixPath
 
+from . import library
 from .units import Tokens
 
 # How llama.cpp spells "every layer on the card". Fewer than this and part of the model
@@ -67,10 +69,17 @@ class Router:
 
 @dataclass(frozen=True)
 class Served:
-    """One model the router serves, as a client has to describe it."""
+    """One model the router serves, as a client has to describe it.
+
+    The stem is what the model is with the quantisation and the publisher left off, read
+    off the file the router names: the same thing a recommendation is looked up by, so
+    that what this repository knows about a model can be found from a router's answer
+    alone.
+    """
 
     id: str
     name: str
+    stem: str
     window: Tokens
     cap: Tokens
     modalities: tuple[str, ...]
@@ -102,10 +111,15 @@ def read(entry: Mapping[str, object]) -> Offered:
     if not window.isdigit() or int(window) <= 0:
         return Unusable(served, "reports no window")
 
+    weights = flag(argv, "--model")
+    if not weights:
+        return Unusable(served, "names no file, so nothing can be read of the model")
+
     ctx = Tokens(int(window))
 
     return Served(id=served,
                   name=display(argv, ctx),
+                  stem=library.stem(_place(weights)),
                   window=ctx,
                   cap=reply_cap(ctx),
                   modalities=_modalities(entry),
@@ -197,6 +211,16 @@ def _weights(path: str) -> str:
 
     named = base.replace("-", " ")
     return f"{named} {quant}" if quant else named
+
+
+def _place(weights: str) -> PurePosixPath:
+    """The file the router named, as a path whose parts can be read off here.
+
+    The separator is the one the answer carries rather than the one this machine uses: a
+    router runs on the machine with the card and a client runs wherever it likes, so a
+    path written with backslashes has to read the same on a machine that has none.
+    """
+    return PurePosixPath(weights.replace("\\", "/"))
 
 
 def _argv(entry: Mapping[str, object]) -> tuple[str, ...]:

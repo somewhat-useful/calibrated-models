@@ -1,4 +1,5 @@
-"""This machine's settings file: where it is unless told otherwise, and reading it.
+"""The two files a command reads before it can do anything: this machine's settings, and
+the recommendations this repository ships.
 
 config.py is the other half and knows nothing about any machine -- text in, values out,
 every way the text can be wrong ending in one line. Getting hold of the text, and
@@ -13,8 +14,9 @@ one working setup and running the commands from its root the way to use it.
 
 from pathlib import Path
 
-from . import config, devices, files
+from . import config, devices, files, recommended, workspace
 from .config import Config, ConfigError
+from .recommended import RecommendedError, Row
 
 NAME = "settings.toml"
 DEFAULT = Path(NAME)
@@ -41,3 +43,19 @@ def parsed(said: str) -> Config:
 def read(path: Path) -> Config:
     """The file, read. Both steps, for the commands that need no text of their own."""
     return parsed(text(path))
+
+
+def rows() -> tuple[Row, ...]:
+    """What this repository recommends its models be run with.
+
+    Not a machine's file and not looked for beside one: these are properties of the
+    models, the same wherever they run, and the copy that answers is the one in the
+    repository the command was run from. A copy without it is told so, rather than left
+    recommending nothing to everybody.
+    """
+    where = workspace.recommended()
+    if not files.exists(where):
+        raise RecommendedError(
+            f"{workspace.RECOMMENDED} is not in this copy of the repository: {where}")
+
+    return recommended.parse(files.read(where), config.DERIVED | config.FLAGS)
