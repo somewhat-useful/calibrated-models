@@ -9,14 +9,14 @@ import unittest
 from typing import get_args
 
 from cm import recommended, workspace
-from cm.config import DERIVED, FLAGS
+from cm.config import DERIVED, ENTRY
 from cm.recommended import (EFFORTS, Advice, Advised, Ambiguous, Recommended,
                             RecommendedError, Thinking, Unknown, Untold)
 
 CARD = "https://example.invalid/publisher/model"
 
 # What a settings file refuses to carry, which is what scan hands the parser.
-UNSETTABLE = DERIVED | FLAGS
+UNSETTABLE = DERIVED | ENTRY
 
 ONE = f"""
 [recommended.'qwen3.8-27b']
@@ -121,7 +121,7 @@ class ARowCannotRecommendWhatASettingsFileWillNotHold(unittest.TestCase):
     def test_a_flag_of_the_entry_is_refused(self):
         """hidden and manual belong to the entry rather than to its sampler values, and
         under the settings header they do nothing at all."""
-        for name in sorted(FLAGS):
+        for name in sorted(ENTRY):
             with self.subTest(name=name):
                 self.assertIn(f"{name} is not a sampler value",
                               self.refused_with(name))

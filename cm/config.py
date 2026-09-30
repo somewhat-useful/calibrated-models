@@ -63,10 +63,25 @@ HIDDEN = _Flag("hidden", False)
 # way it does not touch, however far the two have drifted apart.
 MANUAL = _Flag("manual", False)
 
-# Both are keys of the entry rather than sampler values, and TOML gives a bare key to
-# the last table header above it -- so one written under [models."x".settings] is a
-# sampler value called `hidden` that hides nothing. Caught rather than ignored.
-FLAGS = frozenset({HIDDEN.name, MANUAL.name})
+# Whether the entry says how the model runs rather than leaving it to be worked out. See
+# Stated: such an entry carries its whole command line, the derived keys included, and
+# calibrate copies it into the preset without asking the estimator anything.
+SPECIAL = _Flag("special", False)
+
+# What such an entry has to say for itself: how much video memory the profile holds once
+# it is loaded, and the projector it is served with where it is served with one.
+HOLDS = "holds_mib"
+PROJECTOR = "projector"
+
+# What a named projector is written into the preset as: the file, and the switch that
+# would otherwise have the router read the model as accepting nothing but text.
+MMPROJ = "mmproj"
+NO_MMPROJ = "no-mmproj"
+
+# Keys of the entry rather than sampler values, and TOML gives a bare key to the last
+# table header above it -- so one written under [models."x".settings] is a sampler value
+# called `hidden` that hides nothing. Caught rather than ignored.
+ENTRY = frozenset({HIDDEN.name, MANUAL.name, SPECIAL.name, HOLDS, PROJECTOR})
 
 DEFAULT_PRESET = "llamacpp.models.ini"
 
@@ -109,13 +124,75 @@ DEFAULT_RUNTIME = Runtime(batch=2048, ubatch=512, parallel=1, flash_attn="auto")
 
 
 @dataclass(frozen=True)
+class NoProjector:
+    """The model is served on its own file alone."""
+
+
+@dataclass(frozen=True)
+class Projector:
+    """The multimodal projector the model is served with, beside its own file.
+
+    llama.cpp loads one named this way whatever no-mmproj says: that key only governs
+    whether a projector is fetched along with a model named by repository. The router's
+    own reading of what a model accepts does go by it, though, so an entry naming a
+    projector has to turn it off for itself as well.
+    """
+
+    path: Path
+
+
+Beside = NoProjector | Projector
+
+
+@dataclass(frozen=True)
+class Worked:
+    """How the model runs is left to be worked out against this machine's cards.
+
+    allowed is what the person permits of what the file could do, which narrows the
+    profiles the search may arrive at.
+    """
+
+    allowed: Allowed
+
+
+@dataclass(frozen=True)
+class Stated:
+    """The entry says how the model runs, in full, and is copied into the preset as it
+    stands.
+
+    For a model the estimator cannot be asked about. It reads the header of the model's
+    own file and nothing else, so a model served with a projector beside it is one whose
+    answer is short by however much that projector takes -- and a placement computed from
+    a short answer is the silent failure this program exists to prevent. So such a model
+    is not placed at all: the entry carries its whole command line, the keys calibrate
+    would otherwise derive included, and llama.cpp fits it on loading, where the
+    projector is in front of it.
+
+    That is a trade rather than a free pass. Nothing measured this machine, so holds is
+    the person's own figure for what the profile takes on the card once it is loaded --
+    the one thing in a preset section that is read back, by `vram`, and the one thing
+    here nobody can compute. It is checked against a real load rather than believed.
+
+    One profile, named by the entry's key and nothing else. There is nothing to choose
+    between and nothing was searched for, so the window a name would carry is the
+    window the entry itself writes, and the name never moves.
+    """
+
+    holds: Mib
+    beside: Beside
+
+
+Runs = Worked | Stated
+
+
+@dataclass(frozen=True)
 class Model:
     """One GGUF the router should serve, and everything the file says about it."""
 
     key: Key
     path: Path
     vendor: Mapping[str, Value]
-    allowed: Allowed
+    runs: Runs
     # Whether these settings are the person's own, which scan leaves alone.
     manual: bool
 
@@ -1118,20 +1195,82 @@ def _model(key: str, entry: Mapping[str, object], model_root: Path) -> Model:
     vendor = entry.get("settings", {})
     if not isinstance(vendor, dict):
         raise ConfigError(f"{key}: settings must be a table")
+
+    runs = _runs(key, entry, model_root)
+    match runs:
+        case Stated(_, Projector(_)):
+            for name in (MMPROJ, NO_MMPROJ):
+                if name in vendor:
+                    raise ConfigError(
+                        f"{key}: {name} is written from {PROJECTOR} above, so this "
+                        f'entry may not also set it under [models."{key}".settings] -- '
+                        "one of the two would quietly win. Take it out.")
+        case Stated(_, NoProjector()) | Worked(_):
+            pass
+
     for name in vendor:
-        if name in DERIVED:
+        if name in DERIVED and isinstance(runs, Worked):
             raise ConfigError(f"{key}: {name} is derived; remove it")
-        if name in FLAGS:
+        if name in ENTRY:
             raise ConfigError(
-                f"{key}: {name} is a flag of the entry and not a sampler value, but it "
+                f"{key}: {name} is a key of the entry and not a sampler value, but it "
                 f'is written under [models."{key}".settings], where it does nothing. '
                 "Move it above that line.")
 
     return Model(key=Key(key),
                  path=model_root / file,
                  vendor=dict(vendor),
-                 allowed=_allowed(key, entry),
+                 runs=runs,
                  manual=_flag(key, entry, MANUAL))
+
+
+def _runs(key: str, entry: Mapping[str, object], model_root: Path) -> Runs:
+    """Whether the entry leaves how the model runs to be worked out, or says it."""
+    if not _flag(key, entry, SPECIAL):
+        for name in (HOLDS, PROJECTOR):
+            if name in entry:
+                raise ConfigError(
+                    f"{key}: {name} says how the model runs, which only an entry marked "
+                    f"{SPECIAL.name} = true says for itself. Either mark it, or take "
+                    f"{name} out and let calibrate work the placement out.")
+        return Worked(_allowed(key, entry))
+
+    for name in ("cache", "mtp"):
+        if name in entry:
+            raise ConfigError(
+                f"{key}: {name} narrows what calibrate may place, and an entry marked "
+                f"{SPECIAL.name} = true is not placed at all -- its settings are what "
+                f"it runs with. Write what you want under [models.\"{key}\".settings] "
+                f"and take {name} out.")
+
+    return Stated(holds=_holds(key, entry), beside=_beside(key, entry, model_root))
+
+
+def _holds(key: str, entry: Mapping[str, object]) -> Mib:
+    """What the entry says the profile holds on the card once it is loaded.
+
+    Asked for rather than defaulted: `vram` answers what has to be closed for a model to
+    load, and a profile that held nothing would be one it always waved through.
+    """
+    stated = entry.get(HOLDS)
+    if not isinstance(stated, int) or isinstance(stated, bool) or stated <= 0:
+        raise ConfigError(
+            f"{key}: {SPECIAL.name} = true, so nothing measures this model here and "
+            f"{HOLDS} has to say what it holds on the card, in MiB, as a whole number "
+            "above zero. It is what `vram` reads to say whether the model fits.")
+
+    return Mib(stated)
+
+
+def _beside(key: str, entry: Mapping[str, object], model_root: Path) -> Beside:
+    """The projector the entry names, under the library like the model's own file."""
+    named = entry.get(PROJECTOR)
+    if named is None:
+        return NoProjector()
+    if not isinstance(named, str) or not named.strip():
+        raise ConfigError(f"{key}: {PROJECTOR} names no file")
+
+    return Projector(model_root / named)
 
 
 def _allowed(key: str, entry: Mapping[str, object]) -> Allowed:

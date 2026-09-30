@@ -8,8 +8,8 @@ own reasons stands until it stops working.
 import copy
 import unittest
 
-from cm.agent import (OFF, REASONING_EFFORT, Offering, UnknownShape, compacted, empty,
-                      pointed)
+from cm.agent import (OFF, REASONING_EFFORT, Offering, UnknownShape, chats, chatting,
+                      compacted, empty, pointed)
 from cm.policy import Bound, Room
 from cm.recommended import EFFORTS, Thinking, Untold
 from cm.served import Router, Served
@@ -23,9 +23,9 @@ ROOM = Room(reserve=Bound(most=Tokens(8399), take=Tokens(8000)),
             keep=Bound(most=Tokens(6860), take=Tokens(4000)))
 
 
-def served(id, cap=16384, window=52000) -> Served:
+def served(id, cap=16384, window=52000, modalities=("text",)) -> Served:
     return Served(id=id, name=f"{id} for people", stem=id, window=Tokens(window),
-                  cap=Tokens(cap), modalities=("text",), reasoning=True)
+                  cap=Tokens(cap), modalities=modalities, reasoning=True)
 
 
 def offered(id, thinking=Untold(), **rest) -> Offering:
@@ -288,6 +288,41 @@ class PiMustCompactLaterThanThePolicyDoes(unittest.TestCase):
 
         self.assertEqual(8000, written.document["compaction"]["reserveTokens"])
         self.assertEqual(4000, written.document["compaction"]["keepRecentTokens"])
+
+
+class AModelThatListensIsNotOneToTalkTo(unittest.TestCase):
+    """A recogniser is served by the same router on the same endpoint, and a coding
+    agent has nothing to send it: its input is a recording, and what comes back is a
+    transcript rather than a turn. Pictures are not this -- a model that reads an image
+    reads a conversation too."""
+
+    def test_a_model_taking_audio_is_not_pis_to_be_offered(self):
+        listener = served("listener", window=4096, modalities=("text", "audio"))
+
+        self.assertFalse(chats(listener))
+
+    def test_a_model_taking_pictures_still_is(self):
+        looker = served("gemma4-12b", modalities=("text", "image"))
+
+        self.assertTrue(chats(looker))
+
+    def test_a_model_taking_nothing_but_text_still_is(self):
+        self.assertTrue(chats(served("qwen3.8-52k-q4-mtp")))
+
+    def test_the_list_pi_works_from_is_the_one_with_it_taken_out(self):
+        """Both the model list and the compaction numbers come off this one list. A
+        recogniser holds a window as short as its longest recording, and a second
+        place computing that for itself would compact every conversation down to a
+        window nothing uses."""
+        listener = served("listener", window=4096, modalities=("text", "audio"))
+        talker = served("qwen3.8-52k-q4-mtp")
+
+        self.assertEqual((talker,), chatting((listener, talker)))
+
+    def test_a_router_serving_nothing_else_leaves_nothing(self):
+        listener = served("listener", window=4096, modalities=("text", "audio"))
+
+        self.assertEqual((), chatting((listener,)))
 
 
 if __name__ == "__main__":

@@ -36,6 +36,16 @@ COMPAT = {"supportsDeveloperRole": False,
 # asked anything, so it is the level no row has to name and every model can be offered.
 OFF, NONE = "off", "none"
 
+# What a model accepts that says it is not something to hold a conversation with. A
+# recogniser is served by the router like any other model and answers on the same endpoint,
+# but a coding agent has nothing to send it and no way to read what it sends back: its
+# whole input is a recording, and the reply is a transcript rather than a turn. So it is
+# left out of pi's list, where it would otherwise sit among the models a person picks from.
+#
+# Pictures are not this. A model that reads an image reads a conversation too, and pi
+# passes the modalities through so that it can send one.
+AUDIO = "audio"
+
 API = "openai-completions"
 
 # Ignored by llama.cpp, and pi will not call a provider that carries none.
@@ -72,6 +82,22 @@ def empty() -> dict[str, object]:
     anything can be written into it.
     """
     return {"providers": {}}
+
+
+def chats(served: Served) -> bool:
+    """Whether pi has any use for this model. See AUDIO for the one that it has not."""
+    return AUDIO not in served.modalities
+
+
+def chatting(models: Sequence[Served]) -> tuple[Served, ...]:
+    """Only the models pi has a use for, out of everything the router serves.
+
+    Here rather than at each place that needs it, because two places do: the list pi is
+    given, and the compaction numbers it has to fit behind. A recogniser holds a window
+    as short as its longest recording, so leaving it in the second would compact every
+    conversation down to a window nothing uses.
+    """
+    return tuple(one for one in models if chats(one))
 
 
 def pointed(document: Mapping[str, object], router: Router, fallback: str,

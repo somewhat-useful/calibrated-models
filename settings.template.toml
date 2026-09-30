@@ -173,7 +173,9 @@ ctx-size = 32768
 fit      = 'on'
 
 # Chat template comes from the model's own file. mmproj files sit beside the weights and
-# are not loaded: nothing here serves images.
+# are not loaded: a model placed here is placed against an estimate that does not cover
+# one. A model that needs its projector says so in its own entry, with special = true
+# and projector below, and turns this off for itself.
 jinja     = true
 no-mmproj = true
 
@@ -203,9 +205,10 @@ reasoning = 'auto'
 # something else: an entry belongs to its `file`, not to its key, and scan will not
 # write a second one for a file that already has one.
 #
-# Files that only sit beside a model are left alone -- mmproj-*.gguf is a vision
-# projector, unused here and about a gibibyte of video memory to pair, and mtp-*.gguf is
-# a prediction head, which is read out of the model's own file instead.
+# Files that only sit beside a model are left alone -- mmproj-*.gguf is a multimodal
+# projector, which is named by the entry of the model it belongs to rather than being a
+# model of its own, and mtp-*.gguf is a prediction head, which is read out of the
+# model's own file instead.
 #
 # An entry arrives with a settings block already in it, and scan keeps it up to date.
 # The sampler values come from recommended.toml in the repository, which is where what a
@@ -254,6 +257,44 @@ reasoning = 'auto'
 #                      this way it does not touch, however far the two have drifted.
 #                      Change a value without this and it stays changed only until the
 #                      next run.
+#
+#   special = true     this entry says how the model runs, and calibrate copies it into
+#                      the preset untouched. Nothing is estimated, nothing is placed and
+#                      scan leaves it alone. Its settings block is the whole command
+#                      line, so the keys refused everywhere else -- ctx-size, the cache
+#                      types, device, split-mode, fit -- belong in it, and llama.cpp
+#                      fits the model on loading rather than this program deciding
+#                      beforehand where it goes.
+#
+#                      For a model the estimator cannot be asked about. It reads the
+#                      header of the model's own file and nothing else, so a model
+#                      served with a projector beside it is one whose answer is short by
+#                      whatever that projector takes -- and a placement computed from a
+#                      short answer is what this file refuses everywhere else. Better to
+#                      write the thing out than to compute it out of an answer that does
+#                      not cover it.
+#
+#                      One profile, and its name is the entry's key with nothing added.
+#                      There is nothing to choose between, so there is no window in the
+#                      name to move: a client pinning that name keeps it across every
+#                      recalibration.
+#
+#                      Two keys come with it:
+#
+#   holds_mib = 3300   what the profile holds on the card once it is loaded, in MiB.
+#                      Required, because nothing here measures it and `vram` reads it to
+#                      say whether the model fits and what would have to be closed. It
+#                      is the one figure in the preset no run of calibrate will correct,
+#                      so check it against a real load: start the router, ask for the
+#                      model, and watch what the card gives up.
+#
+#   projector = '...'  a multimodal projector to load beside the weights, written
+#                      relative to the library like `file` above. It is written into the
+#                      section as mmproj, together with no-mmproj = false -- the shared
+#                      block turns projectors off for every model that does not ask for
+#                      one, and the router reads what a model accepts by that key rather
+#                      than by the file. Leave it out and the model is served on its own
+#                      file alone.
 #
 # What scan writes looks like this, and all of it is yours to edit:
 #

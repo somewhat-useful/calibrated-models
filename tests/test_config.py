@@ -11,6 +11,7 @@ from pathlib import Path, PureWindowsPath
 
 from cm import config, files, library, place, workspace
 from cm.config import (DEFAULT_CUDA, DEFAULT_KEPT, DEFAULT_RUNTIME, DERIVED, NEUTRAL,
+                       NoProjector, Projector, Stated,
                        Config, ConfigError, Installing, Rename, Runtime, Writing,
                        installing, names_the_library, naming, recording_the_build,
                        removing, renames, renaming, retuning, unnamed)
@@ -85,6 +86,24 @@ BARE = f"""
 {FILE}
 """
 
+# An entry that says how its model runs rather than leaving it to be worked out. Its
+# settings block is its command line, so the derived keys are in it on purpose.
+PROJECTOR_FILE = Path("ggml-org") / "mmproj.gguf"
+
+STATED = f"""
+{MODEL_ROOT}
+
+[models.'listener']
+{FILE}
+special = true
+holds_mib = 3300
+projector = {quoted(PROJECTOR_FILE)}
+
+[models.'listener'.settings]
+ctx-size = 4096
+device = 'CUDA0'
+"""
+
 
 # The library this machine's LM Studio recorded, as these tests are read: somewhere
 # other than MODELS, so a test that takes one for the other fails. Missing by default:
@@ -124,12 +143,12 @@ class AFileThatCannotBeActedOnSaysWhy(unittest.TestCase):
     def test_a_flag_written_under_the_settings_block_does_nothing_and_says_so(self):
         """TOML gives a bare key to the last header above it, so a flag written under
         [models."x".settings] is a sampler value called hidden that hides nothing."""
-        for flag in ("hidden", "manual"):
+        for flag in sorted(config.ENTRY):
             with self.subTest(flag=flag):
                 text = f"{BARE}\n[models.'qwen3.8'.settings]\n{flag} = true\n"
 
                 self.assertEqual(
-                    f"qwen3.8: {flag} is a flag of the entry and not a sampler value, "
+                    f"qwen3.8: {flag} is a key of the entry and not a sampler value, "
                     f'but it is written under [models."qwen3.8".settings], where it '
                     "does nothing. Move it above that line.",
                     refused(text))
@@ -326,6 +345,120 @@ class ADerivedKeyIsRefusedRatherThanObeyed(unittest.TestCase):
 
         self.assertEqual(written, set(config.DERIVED))
 
+    def test_an_entry_that_says_how_it_runs_is_the_one_place_they_are_allowed(self):
+        """Nothing is derived for such an entry, so there is no placement to override."""
+        for key in sorted(config.DERIVED - {"model", "ctx-size", "device"}):
+            with self.subTest(key=key):
+                text = STATED + f"{key} = 'whatever'\n"
+
+                self.assertEqual("whatever", dict(parse(text).models[0].vendor)[key])
+
+
+class AnEntryMaySayHowItsModelRuns(unittest.TestCase):
+    """For a model the estimator cannot be asked about, which is what `special` is for.
+
+    It reads the header of the model's own file, so a model served with a projector
+    beside it is one whose answer is short by whatever that projector takes. Such an
+    entry is therefore not placed at all: it carries its own command line and states
+    what it holds, and calibrate copies both through.
+    """
+
+    def test_what_it_states_is_what_comes_out(self):
+        given = parse(STATED)
+
+        self.assertEqual(Stated(holds=Mib(3300),
+                                beside=Projector(MODELS / PROJECTOR_FILE)),
+                         given.models[0].runs)
+
+    def test_the_projector_is_found_under_the_library_like_the_model_itself(self):
+        """Both are written relative to the library: it is one directory that moves."""
+        given = parse(STATED)
+
+        self.assertEqual(MODELS / MODEL_FILE, given.models[0].path)
+        self.assertEqual(Projector(MODELS / PROJECTOR_FILE), given.models[0].runs.beside)
+
+    def test_an_entry_naming_no_projector_is_served_on_its_own_file_alone(self):
+        given = parse(STATED.replace(f"projector = {quoted(PROJECTOR_FILE)}\n", ""))
+
+        self.assertEqual(NoProjector(), given.models[0].runs.beside)
+
+    def test_its_settings_pass_through_untouched(self):
+        self.assertEqual({"ctx-size": 4096, "device": "CUDA0"},
+                         dict(parse(STATED).models[0].vendor))
+
+    def test_it_is_left_where_scan_will_not_retune_it(self):
+        """Its settings are its whole command line rather than sampler values, and a
+        run that brought them up to date with a recommendation would wreck it."""
+        self.assertIsInstance(parse(STATED).models[0].runs, Stated)
+
+
+class AnEntrySayingHowItRunsSaysAllOfIt(unittest.TestCase):
+    def test_a_special_that_is_neither(self):
+        self.assertEqual("listener: special must be true or false",
+                         refused(STATED.replace("special = true", "special = 'yes'")))
+
+    def test_it_has_to_say_what_it_holds(self):
+        self.assertEqual(
+            "listener: special = true, so nothing measures this model here and "
+            "holds_mib has to say what it holds on the card, in MiB, as a whole number "
+            "above zero. It is what `vram` reads to say whether the model fits.",
+            refused(STATED.replace("holds_mib = 3300\n", "")))
+
+    def test_what_it_holds_is_a_whole_number_above_zero(self):
+        for written in ("0", "-1", "'plenty'", "true", "3300.5"):
+            with self.subTest(written=written):
+                text = STATED.replace("holds_mib = 3300", f"holds_mib = {written}")
+
+                self.assertTrue(refused(text).startswith("listener: special = true, so "),
+                                refused(text))
+
+    def test_a_projector_naming_no_file(self):
+        self.assertEqual(
+            "listener: projector names no file",
+            refused(STATED.replace(f"projector = {quoted(PROJECTOR_FILE)}",
+                                   "projector = '  '")))
+
+    def test_saying_how_it_runs_without_saying_so_is_refused(self):
+        """Both keys only mean anything for an entry that is not placed, and an entry
+        carrying one without the mark is one somebody meant to mark."""
+        for key, value in ((config.HOLDS, "3300"),
+                           (config.PROJECTOR, quoted(PROJECTOR_FILE))):
+            with self.subTest(key=key):
+                self.assertEqual(
+                    f"qwen3.8: {key} says how the model runs, which only an entry marked "
+                    f"special = true says for itself. Either mark it, or take {key} out "
+                    "and let calibrate work the placement out.",
+                    refused(f"{BARE}{key} = {value}\n"))
+
+    def test_narrowing_what_is_never_searched_is_refused(self):
+        for key, value in (("cache", "['f16']"), ("mtp", "false")):
+            with self.subTest(key=key):
+                self.assertEqual(
+                    f"listener: {key} narrows what calibrate may place, and an entry "
+                    "marked special = true is not placed at all -- its settings are what "
+                    f'it runs with. Write what you want under [models."listener".settings] '
+                    f"and take {key} out.",
+                    refused(STATED.replace("special = true",
+                                           f"special = true\n{key} = {value}")))
+
+    def test_the_projector_may_not_also_be_written_as_a_setting(self):
+        """One of the two would quietly win, which is the whole failure mode here."""
+        for key in (config.MMPROJ, config.NO_MMPROJ):
+            with self.subTest(key=key):
+                self.assertEqual(
+                    f"listener: {key} is written from projector above, so this entry may "
+                    'not also set it under [models."listener".settings] -- one of the two '
+                    "would quietly win. Take it out.",
+                    refused(STATED + f"{key} = 'whatever'\n"))
+
+    def test_an_entry_with_no_projector_may_write_one_by_hand(self):
+        """Nothing is written from an entry that names none, so nothing collides."""
+        text = STATED.replace(f"projector = {quoted(PROJECTOR_FILE)}\n", "")
+
+        self.assertEqual("elsewhere.gguf",
+                         dict(parse(text + "mmproj = 'elsewhere.gguf'\n")
+                              .models[0].vendor)[config.MMPROJ])
+
 
 class WhatTheFileSaysIsWhatComesOut(unittest.TestCase):
     def test_every_value_is_carried_over(self):
@@ -358,8 +491,8 @@ class WhatTheFileSaysIsWhatComesOut(unittest.TestCase):
     def test_what_a_person_rules_out_arrives_as_ruled_out(self):
         given = parse(WHOLE)
 
-        self.assertEqual(frozenset({CacheType.Q8_0}), given.models[0].allowed.caches)
-        self.assertFalse(given.models[0].allowed.head)
+        self.assertEqual(frozenset({CacheType.Q8_0}), given.models[0].runs.allowed.caches)
+        self.assertFalse(given.models[0].runs.allowed.head)
 
     def test_a_model_set_aside_is_kept_apart_from_the_ones_to_place(self):
         """It is out of the way of everything that places or serves, and still there
@@ -391,7 +524,7 @@ class WhatIsNotWrittenDownHasAnAnswerAnyway(unittest.TestCase):
         self.assertEqual(Path("llamacpp.models.ini"), parse(BARE).preset_path)
 
     def test_a_model_that_rules_out_nothing_may_do_everything(self):
-        self.assertEqual(place.EVERYTHING, parse(BARE).models[0].allowed)
+        self.assertEqual(place.EVERYTHING, parse(BARE).models[0].runs.allowed)
 
     def test_a_file_naming_no_model_names_no_model(self):
         """A machine that has not run scan yet, which is not a machine that is wrong.
@@ -926,7 +1059,7 @@ class ScanBringsAnEntryUpToDateAndTouchesNothingElse(unittest.TestCase):
         given = parse(self.written(flagged))
 
         self.assertEqual((), given.models)
-        self.assertEqual(frozenset({CacheType.Q8_0}), given.withheld[0].allowed.caches)
+        self.assertEqual(frozenset({CacheType.Q8_0}), given.withheld[0].runs.allowed.caches)
 
     def test_a_key_quoted_the_other_way_is_the_same_entry(self):
         """A file may write a key in either kind of quotes, and both name one model."""

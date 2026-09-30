@@ -110,7 +110,8 @@ class OneCardOfSeveralIsNamed(unittest.TestCase):
                       (placed("model", across((FAST,), (66,), (5308,),
                                               pipeline=Pipeline.OFF)),))
 
-        self.assertIn(f"{REQUIRED}: {16303 - 5308} MiB on CUDA0", stated(text)["model-150k"][0])
+        self.assertIn(f"{REQUIRED}: {16303 - 5308} MiB on CUDA0",
+                      stated(text)["model-150k"][0])
 
     def test_a_machines_only_card_is_not_named(self):
         written = section(across((FAST,), (66,), (1024,), pipeline=Pipeline.OFF,

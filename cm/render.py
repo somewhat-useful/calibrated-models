@@ -12,7 +12,8 @@ section and the rest in alphabetical order, values unquoted, `;` starting a comm
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from .config import Config, ConfigError, Model, Value
+from .config import (MMPROJ, NO_MMPROJ, Config, ConfigError, Model, NoProjector,
+                     Projector, Stated, Value)
 from .machine import Machine, SystemMemory, system_memory, threads
 from .name import Profile
 from .place import (DRAFT_LOOKAHEAD, NO_TENSOR, Among, ExpertsOnCpu, Layout, Settings,
@@ -62,8 +63,24 @@ class Placed:
     resident: Mib
 
 
+@dataclass(frozen=True)
+class Given:
+    """One model whose entry says how it runs, served under the entry's own key.
+
+    One section, and its name is the key: nothing was searched for, so there is no other
+    profile of this model for a name to tell it apart from, and the window a name would
+    carry is the one the entry itself writes.
+    """
+
+    model: Model
+    stated: Stated
+
+
+Offered = Placed | Given
+
+
 def preset(config: Config, machine: Machine, memory: SystemMemory,
-           placed: Sequence[Placed]) -> str:
+           offered: Sequence[Offered]) -> str:
     """The whole preset file.
 
     A section name is what the router serves a model under, so two sections of one name
@@ -73,18 +90,50 @@ def preset(config: Config, machine: Machine, memory: SystemMemory,
     profile of `qwen3.8`. Here is where every name is visible at once, so here is where
     that is refused.
     """
-    sections: dict[str, tuple[Placed, Settings]] = {}
-    for one in placed:
-        for profile in one.profiles:
-            if profile.name in sections:
-                raise ConfigError(f"duplicate section: {profile.name}")
-            sections[profile.name] = (one, profile.settings)
+    sections: dict[str, tuple[tuple[str, ...], Mapping[str, Value]]] = {}
+    for one in offered:
+        for name, notes, keys in _sections(config, machine, one):
+            if name in sections:
+                raise ConfigError(f"duplicate section: {name}")
+            sections[name] = (notes, keys)
 
     blocks = [_block("*", (), _shared(config, machine, memory))]
-    blocks += [_block(name, _needs(settings), _section(config, machine, one, settings))
-               for name, (one, settings) in sorted(sections.items())]
+    blocks += [_block(name, notes, keys) for name, (notes, keys) in sorted(sections.items())]
 
     return "\n\n".join([HEADER, "version = 1", *blocks]) + "\n"
+
+
+def _sections(config: Config, machine: Machine,
+              one: Offered) -> tuple[tuple[str, tuple[str, ...], Mapping[str, Value]], ...]:
+    """Every section one model contributes: its name, its comments, and its keys."""
+    match one:
+        case Placed():
+            return tuple((profile.name, _needs(profile.settings),
+                          _section(config, machine, one, profile.settings))
+                         for profile in one.profiles)
+        case Given():
+            return ((one.model.key, _stated(one.stated), _given(one)),)
+
+
+def _given(given: Given) -> Mapping[str, Value]:
+    """One model as its entry wrote it: the file, the projector, and the entry's own
+    settings.
+
+    Nothing is added and nothing is placed. The prompt cache is left to [*] as well --
+    this model's share of system memory is not known here, since nothing measured it.
+    """
+    keys: dict[str, Value] = {"model": str(given.model.path)}
+    keys.update(given.model.vendor)
+
+    match given.stated.beside:
+        case NoProjector():
+            return keys
+        case Projector(path):
+            # The shared block turns projectors off for every model that does not ask for
+            # one, and the router reads what a model accepts by that key rather than by
+            # the file: left as it stands, this model would be served the projector and
+            # reported as accepting nothing but text.
+            return {**keys, MMPROJ: str(path), NO_MMPROJ: False}
 
 
 def _shared(config: Config, machine: Machine,
@@ -211,6 +260,16 @@ def _needs(settings: Settings) -> tuple[str, ...]:
     each = ", ".join(f"{amount} MiB on {device_name(device)}"
                      for device, amount in zip(settings.layout.devices, held))
     return (f"{REQUIRED}: {each}, held from the moment this profile loads",)
+
+
+def _stated(stated: Stated) -> tuple[str, ...]:
+    """The same for a model nothing here placed: the figure its entry states.
+
+    Said to be the settings file's own, because that is the difference that matters when
+    it turns out to be wrong -- no run of calibrate will correct it.
+    """
+    return (f"{REQUIRED}: {stated.holds} MiB of video memory, held from the moment this "
+            "profile loads, as the settings file states it -- nothing here measured it",)
 
 
 def _block(name: str, notes: Sequence[str], keys: Mapping[str, Value]) -> str:

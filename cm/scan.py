@@ -44,7 +44,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePath
 
 from . import config, devices, files, library, reading, recommended, workspace
-from .config import ConfigError, Model, Rename, Untouched, Writing
+from .config import SPECIAL, ConfigError, Model, Rename, Stated, Untouched, Writing
 from .library import Key
 from .lmstudio import Found, Missing
 from .recommended import Ambiguous, Recommended, RecommendedError, Row, Unknown
@@ -69,7 +69,7 @@ def _arguments(argv: Sequence[str]) -> argparse.Namespace:
         description="Add an entry to the settings file for every model in the library "
                     "that has none yet, and bring every entry's sampler values up to "
                     "date with what this repository recommends. An entry marked "
-                    "manual = true is left alone.")
+                    "manual = true or special = true is left alone.")
     parser.add_argument("--settings", type=Path, default=reading.DEFAULT,
                         help="the settings file to read and write")
     parser.add_argument("--force", action="store_true",
@@ -231,6 +231,10 @@ def _existing(rows: Sequence[Row], named: Sequence[Model],
     writings, left = [], []
 
     for one in named:
+        if isinstance(one.runs, Stated):
+            left.append(_Left(one.key, f"{SPECIAL.name} = true"))
+            continue
+
         if one.manual:
             left.append(_Left(one.key, "manual = true"))
             continue
