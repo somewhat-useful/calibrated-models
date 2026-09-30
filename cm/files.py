@@ -26,14 +26,23 @@ def exists(path: Path) -> bool:
 
 
 def replace(path: Path, text: str) -> None:
-    """Write a file that belongs to another program, whole or not at all.
+    """Write a file that belongs to another program, keeping the file it already is.
 
-    Through a temporary and moved into place: a half-written configuration leaves that
-    program unable to start, and this runs while it may be open.
+    Through a temporary, then copied over the top rather than moved into place. Moving is
+    the atomic way round and was how this read, but it replaces the file rather than
+    writing it, and Windows refuses to replace one another program is holding open: an
+    editor with the configuration on screen is enough, and the run then dies having
+    written that program's other file and not this one. Copying writes into the file that
+    is already there, which an open reader does not stand in the way of.
+
+    The cost is that the write is no longer whole or nothing. What covers it sits on
+    either side of this: the caller takes a dated copy before calling, and the temporary
+    is left where it is when the copy fails, holding the whole of what was to be written.
     """
     temporary = path.with_suffix(path.suffix + ".new")
     temporary.write_text(text, encoding="utf-8")
-    temporary.replace(path)
+    shutil.copyfile(temporary, path)
+    temporary.unlink()
 
 
 def backup(path: Path, keep: int) -> Path:

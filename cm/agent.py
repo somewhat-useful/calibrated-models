@@ -13,7 +13,7 @@ import copy
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from .policy import Room
+from .policy import Bound, Room
 from .recommended import EFFORTS, Thinking, Told, Untold
 from .served import Router, Served
 
@@ -45,6 +45,10 @@ OFF, NONE = "off", "none"
 # Pictures are not this. A model that reads an image reads a conversation too, and pi
 # passes the modalities through so that it can send one.
 AUDIO = "audio"
+
+# pi's two global compaction numbers: how much of the window it holds back for the reply,
+# and how much of the recent conversation it keeps word for word.
+RESERVE, KEEP = "reserveTokens", "keepRecentTokens"
 
 API = "openai-completions"
 
@@ -142,53 +146,70 @@ def pointed(document: Mapping[str, object], router: Router, fallback: str,
 
 
 def compacted(document: Mapping[str, object], room: Room) -> Written:
-    """pi's settings.json, with its two global numbers behind the policy's.
+    """pi's settings.json, with its two global numbers where the policy leaves room for.
 
-    A value already there is left alone while it is behind the policy: what a person set
-    for their own reasons is theirs until it stops working. Only one that would take the
-    extension out of the decision is corrected, and to a round number under the bound
-    rather than to the bound itself -- these are also what pi falls back on when
-    summarising fails, so there is no reason to sit one token off the line.
+    A value inside what the policy leaves room for is left alone: what a person set for
+    their own reasons is theirs while it works.
+
+    Outside it, this writes in both directions. A run that only ever lowers is a ratchet:
+    the fleet a number was lowered for changes -- a model with a short window is added,
+    served for a while and taken out -- and pi is left compacting for a router that is no
+    longer there, with nothing to say so and nobody to notice. Raising it by hand is not
+    the answer either, since the next run lowers it again.
+
+    Either way the value written is a round one under the bound rather than the bound
+    itself: these are also what pi falls back on when summarising fails, so there is no
+    reason to sit one token off the line.
     """
     written = copy.deepcopy(dict(document))
 
     settings = written.get("compaction")
     if not isinstance(settings, Mapping):
         written["compaction"] = {"enabled": True,
-                                 "reserveTokens": room.reserve.take,
-                                 "keepRecentTokens": room.keep.take}
+                                 RESERVE: room.reserve.take,
+                                 KEEP: room.keep.take}
         return Written(written, (f"compaction set to reserve {room.reserve.take}, "
                                  f"keeping {room.keep.take} of the recent conversation",))
 
     compaction = dict(settings)
     written["compaction"] = compaction
-    changes = []
 
-    held = compaction.get("reserveTokens")
-    if not _count(held):
-        compaction["reserveTokens"] = room.reserve.take
-        changes.append(f"reserveTokens was not set -> {room.reserve.take}")
-    elif held > room.reserve.most:
-        compaction["reserveTokens"] = room.reserve.take
-        changes.append(f"reserveTokens {held} -> {room.reserve.take}: from "
-                       f"{room.reserve.most + 1} up the policy stands aside and pi "
-                       "compacts on its own")
-
-    recent = compaction.get("keepRecentTokens")
-    if not _count(recent):
-        compaction["keepRecentTokens"] = room.keep.take
-        changes.append(f"keepRecentTokens was not set -> {room.keep.take}")
-    elif recent > room.keep.most:
-        compaction["keepRecentTokens"] = room.keep.take
-        changes.append(f"keepRecentTokens {recent} -> {room.keep.take}: above "
-                       f"{room.keep.most} pi answers that there is nothing worth "
-                       "compacting and the policy is never asked where to cut")
+    changes = [
+        _put(compaction, RESERVE, room.reserve,
+             over=f"from {room.reserve.most + 1} up the policy stands aside and pi "
+                  "compacts on its own",
+             under=f"the policy leaves room up to {room.reserve.most}, and this is also "
+                   "what pi holds back for a reply when summarising fails"),
+        _put(compaction, KEEP, room.keep,
+             over=f"above {room.keep.most} pi answers that there is nothing worth "
+                  "compacting and the policy is never asked where to cut",
+             under=f"the policy leaves room up to {room.keep.most}, and keeping less of "
+                   "the recent conversation than that is context given up for nothing"),
+    ]
 
     if not isinstance(compaction.get("enabled"), bool):
         compaction["enabled"] = True
         changes.append("compaction was not enabled -> true")
 
-    return Written(written, tuple(changes))
+    return Written(written, tuple(one for one in changes if one))
+
+
+def _put(compaction: dict[str, object], key: str, bound: Bound,
+         over: str, under: str) -> str:
+    """One of pi's numbers, put where the policy leaves room for it, and the line saying so.
+
+    Empty where it is already inside that room: a run that changed nothing says nothing.
+    """
+    was = compaction.get(key)
+    if not _count(was):
+        compaction[key] = bound.take
+        return f"{key} was not set -> {bound.take}"
+
+    if bound.take <= was <= bound.most:
+        return ""
+
+    compaction[key] = bound.take
+    return f"{key} {was} -> {bound.take}: {over if was > bound.most else under}"
 
 
 def _which(providers: Mapping[str, object], router: Router, fallback: str) -> str:

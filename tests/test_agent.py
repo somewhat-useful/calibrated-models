@@ -290,6 +290,66 @@ class PiMustCompactLaterThanThePolicyDoes(unittest.TestCase):
         self.assertEqual(4000, written.document["compaction"]["keepRecentTokens"])
 
 
+class WhatWasLoweredForAFleetIsRaisedWhenThatFleetChanges(unittest.TestCase):
+    """A run that only ever lowers is a ratchet.
+
+    The router serves a model with a short window for a while, pi's numbers come down for
+    it, the model is taken out again -- and without this pi goes on compacting for a
+    router that is no longer there. Raising by hand does not help either: the next run
+    would put it back down.
+    """
+
+    # What a short-windowed model left behind: both numbers well under what this room
+    # allows, which is the state the next run has to undo.
+    LOWERED = {"compaction": {"enabled": True, "reserveTokens": 2000,
+                              "keepRecentTokens": 1000}}
+
+    def test_a_reserve_left_below_the_room_is_raised_to_it(self):
+        written = compacted(self.LOWERED, ROOM)
+
+        self.assertEqual(8000, written.document["compaction"]["reserveTokens"])
+
+    def test_a_kept_tail_left_below_the_room_is_raised_to_it(self):
+        written = compacted(self.LOWERED, ROOM)
+
+        self.assertEqual(4000, written.document["compaction"]["keepRecentTokens"])
+
+    def test_raising_says_why_rather_than_just_doing_it(self):
+        written = compacted(self.LOWERED, ROOM)
+
+        self.assertEqual(2, len(written.changes))
+        for change in written.changes:
+            with self.subTest(change=change):
+                self.assertIn("the policy leaves room up to", change)
+
+    def test_lowering_and_raising_are_told_apart(self):
+        """The two say different things, because the reason differs: one would take the
+        extension out of the decision, the other wastes what it left."""
+        lowered = compacted({"compaction": {"enabled": True, "reserveTokens": 16384,
+                                            "keepRecentTokens": 4000}}, ROOM)
+        raised = compacted(self.LOWERED, ROOM)
+
+        self.assertIn("the policy stands aside", lowered.changes[0])
+        self.assertNotIn("the policy stands aside", raised.changes[0])
+
+    def test_a_second_run_over_its_own_answer_changes_nothing(self):
+        once = compacted(self.LOWERED, ROOM)
+        twice = compacted(once.document, ROOM)
+
+        self.assertEqual((), twice.changes)
+        self.assertEqual(once.document, twice.document)
+
+    def test_a_number_the_room_allows_is_still_its_owners(self):
+        """Only outside the room is this program's to write. 8192 sits inside it."""
+        held = {"compaction": {"enabled": True, "reserveTokens": 8192,
+                               "keepRecentTokens": 6860}}
+
+        written = compacted(held, ROOM)
+
+        self.assertEqual((), written.changes)
+        self.assertEqual(held, written.document)
+
+
 class AModelThatListensIsNotOneToTalkTo(unittest.TestCase):
     """A recogniser is served by the same router on the same endpoint, and a coding
     agent has nothing to send it: its input is a recording, and what comes back is a
