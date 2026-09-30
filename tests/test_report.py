@@ -9,13 +9,14 @@ import unittest
 from pathlib import Path
 
 from cm import place
-from cm.config import Model
+from cm.config import Model, Projector, Stated, Worked
 from cm.machine import Card, SystemMemory
 from cm.name import names
 from cm.nonempty import NonEmpty
 from cm.place import CacheType, ExpertsOnCpu, Settings, WholeCard
-from cm.render import Placed
-from cm.report import about, closing, missing, opening, system, too_much
+from cm.render import Given, Placed
+from cm.report import (about, closing, missing, no_projector, opening, system,
+                       too_much)
 from cm.units import Layers, Mib, Tokens
 from one_card import LAYOUT, shown
 from places import somewhere
@@ -29,7 +30,7 @@ def model(key) -> Model:
     return Model(key=key,
                  path=MODELS / f"{key}.gguf",
                  vendor={},
-                 allowed=place.EVERYTHING,
+                 runs=Worked(place.EVERYTHING),
                  manual=False)
 
 
@@ -162,6 +163,33 @@ class WhatWasWrittenIsCountedAtTheEnd(unittest.TestCase):
 
         self.assertIn("0 profiles", line)
         self.assertIn("0 of 1 models", line)
+
+
+class AModelNothingHerePlacedIsStillReported(unittest.TestCase):
+    """It went into the preset, so the run has to say so and say on whose word."""
+
+    LISTENER = Given(model("listener"),
+                     Stated(holds=Mib(3300), beside=Projector(MODELS / "mmproj.gguf")))
+
+    def test_it_is_named_and_the_figure_is_the_entrys_own(self):
+        lines = about(self.LISTENER)
+
+        self.assertEqual("listener", lines[0])
+        self.assertIn("3300 MiB on the card", lines[1])
+        self.assertIn("as the settings file states it", lines[1])
+
+    def test_it_counts_as_one_profile_of_one_model_served(self):
+        line = closing(Path("llamacpp.models.ini"), (self.LISTENER,))
+
+        self.assertIn("1 profiles", line)
+        self.assertIn("1 of 1 models", line)
+
+    def test_a_projector_that_is_not_there_is_named_with_its_path(self):
+        path = somewhere("models", "ggml-org", "mmproj.gguf")
+        line = no_projector("listener", path)
+
+        self.assertIn("listener", line)
+        self.assertIn(str(path), line)
 
 
 class TheMemoryOffTheCardIsSaidOutLoud(unittest.TestCase):

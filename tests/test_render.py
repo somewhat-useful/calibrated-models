@@ -10,13 +10,13 @@ import unittest
 from pathlib import Path
 
 from cm import place, render
-from cm.config import (DEFAULT_CUDA, DEFAULT_KEPT, DEFAULT_RUNTIME, Config,
-                       ConfigError, Model)
+from cm.config import (DEFAULT_CUDA, DEFAULT_KEPT, DEFAULT_RUNTIME, Config, ConfigError,
+                       Model, NoProjector, Projector, Stated, Worked)
 from cm.machine import Card, Core, Fitted, Machine, system_memory, threads
 from cm.name import names
 from cm.nonempty import NonEmpty
 from cm.place import CacheType, ExpertsOnCpu, Settings, WholeCard
-from cm.render import REQUIRED, Placed, preset
+from cm.render import REQUIRED, Given, Placed, preset
 from cm.serving import (DEFAULT_HOST, DEFAULT_IDLE, DEFAULT_PORT,
                         DEFAULT_RESIDENT, Serving)
 from cm.units import Layers, Mib, Tokens
@@ -60,7 +60,7 @@ def model(key, vendor=None) -> Model:
     return Model(key=key,
                  path=MODELS / f"{key}.gguf",
                  vendor=dict(vendor or {}),
-                 allowed=place.EVERYTHING,
+                 runs=Worked(place.EVERYTHING),
                  manual=False)
 
 
@@ -383,5 +383,95 @@ class EverySectionSaysWhatItWillHold(unittest.TestCase):
             for key, value in parsed[section].items():
                 with self.subTest(section=section, key=key):
                     self.assertNotIn(REQUIRED, (key + value).upper())
+
+
+PROJECTOR = MODELS / "mmproj.gguf"
+
+
+def given(key, vendor=None, holds=3300, beside=None) -> Given:
+    return Given(model(key, vendor),
+                 Stated(holds=Mib(holds), beside=beside or Projector(PROJECTOR)))
+
+
+class AModelThatSaysHowItRunsIsWrittenAsItStands(unittest.TestCase):
+    """Nothing placed it, so nothing of a placement is written for it.
+
+    Its section is its own settings and the two files it loads, under the entry's key.
+    Everything else -- the window, the cards, the cache precision, whether it fits at
+    all -- was the person's to write and llama.cpp's to act on.
+    """
+
+    def section(self, one):
+        _, parsed = read(preset(config(), MACHINE, MEMORY, (one,)))
+        return parsed["listener"]
+
+    def test_it_is_served_under_the_entrys_own_key(self):
+        _, parsed = read(preset(config(), MACHINE, MEMORY, (given("listener"),)))
+
+        self.assertEqual(["*", "listener"], parsed.sections())
+
+    def test_its_name_does_not_move_when_another_model_is_placed_beside_it(self):
+        """What refined-notes and anything else pins is the key, and the key is all of
+        it: there is no window in the name to be recomputed."""
+        _, alone = read(preset(config(), MACHINE, MEMORY, (given("listener"),)))
+        _, beside = read(preset(config(), MACHINE, MEMORY, (given("listener"), DENSE)))
+
+        self.assertIn("listener", alone.sections())
+        self.assertIn("listener", beside.sections())
+
+    def test_the_file_and_the_projector_are_both_named(self):
+        written = self.section(given("listener"))
+
+        self.assertEqual(str(MODELS / "listener.gguf"), written["model"])
+        self.assertEqual(str(PROJECTOR), written["mmproj"])
+
+    def test_the_shared_blocks_refusal_of_projectors_is_turned_off_for_it(self):
+        """The router reads what a model accepts by that key rather than by the file, so
+        a model served a projector under no-mmproj = true is reported as text only."""
+        written = self.section(given("listener"))
+
+        self.assertEqual("false", written["no-mmproj"])
+
+    def test_a_model_with_no_projector_names_neither_key(self):
+        written = self.section(given("listener", beside=NoProjector()))
+
+        for key in ("mmproj", "no-mmproj"):
+            with self.subTest(key=key):
+                self.assertNotIn(key, written)
+
+    def test_its_own_settings_are_the_whole_of_what_it_runs_with(self):
+        written = self.section(given("listener", vendor={"ctx-size": 4096,
+                                                        "device": "CUDA0",
+                                                        "cache-type-k": "f16"}))
+
+        self.assertEqual("4096", written["ctx-size"])
+        self.assertEqual("CUDA0", written["device"])
+        self.assertEqual("f16", written["cache-type-k"])
+
+    def test_nothing_of_a_placement_is_added_to_it(self):
+        written = self.section(given("listener"))
+
+        for key in ("ctx-size", "fit", "gpu-layers", "cache-type-k", "cache-type-v",
+                    "cache-ram", "split-mode", "tensor-split", "n-cpu-moe"):
+            with self.subTest(key=key):
+                self.assertNotIn(key, written)
+
+    def test_it_states_what_it_holds_where_vram_reads_it(self):
+        said = stated(preset(config(), MACHINE, MEMORY, (given("listener", holds=3300),)))
+
+        self.assertEqual(1, len(said["listener"]))
+        self.assertIn(f"{REQUIRED}: 3300 MiB of video memory", said["listener"][0])
+
+    def test_the_figure_is_said_to_be_the_settings_files_own(self):
+        """It is the one figure in the file no run of calibrate will ever correct."""
+        said = stated(preset(config(), MACHINE, MEMORY, (given("listener"),)))
+
+        self.assertIn("as the settings file states it", said["listener"][0])
+
+    def test_two_models_keyed_the_same_are_still_refused(self):
+        with self.assertRaises(ConfigError):
+            preset(config(), MACHINE, MEMORY, (given("listener"), given("listener")))
+
+
 if __name__ == "__main__":
     unittest.main()

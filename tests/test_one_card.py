@@ -13,7 +13,8 @@ import unittest
 from pathlib import Path
 
 from cm import place, render
-from cm.config import DEFAULT_CUDA, DEFAULT_KEPT, DEFAULT_RUNTIME, Config, Model
+from cm.config import (DEFAULT_CUDA, DEFAULT_KEPT, DEFAULT_RUNTIME, Config, Model,
+                       Worked)
 from cm.facts import Head, ModelFacts, NoHead
 from cm.machine import Card, Core, Fitted, Machine, system_memory
 from cm.name import names
@@ -61,17 +62,17 @@ def law(fixed, per_token, per_offloaded_layer=0):
 def placed(key, facts, estimator) -> Placed:
     """One model, asked about until the core stops asking, the way calibrate does it."""
     model = Model(key=key, path=MODELS / f"{key}.gguf", vendor={"temp": "1.0"},
-                  allowed=place.EVERYTHING, manual=False)
+                  runs=Worked(place.EVERYTHING), manual=False)
     limits = place.limits_for(chains(CARD, RESERVE), UBATCH, Tokens(25000),
                               Tokens(100000))
 
     answers = {}
-    while asking := place.next_questions(facts, model.allowed, limits, answers):
+    while asking := place.next_questions(facts, model.runs.allowed, limits, answers):
         for question in asking:
             answers[question] = estimator(question)
 
-    chosen = place.settings(facts, model.allowed, limits, answers)
-    return Placed(model, names(key, chosen, place.variants(facts, model.allowed)),
+    chosen = place.settings(facts, model.runs.allowed, limits, answers)
+    return Placed(model, names(key, chosen, place.variants(facts, model.runs.allowed)),
                   place.resident(chosen, answers))
 
 

@@ -27,7 +27,7 @@ programs that read the machine.
 |---|---|---|
 | `python -m cm` | either | Prints the thirteen below in the order they are run, so that which one comes next is not something to open this file for |
 | `python -m cm.install llamacpp` | the one with the card, and one lending its card | Installs the newest llama.cpp release that runs on this machine's driver and cards -- or, with `--build`, the build named -- records it in the settings file as the build everything here runs, and removes the releases past keeping. `--check` says which build that would be |
-| `python -m cm.scan` | the one with the card | Adds an entry to the settings file for every model in the library that has none yet, named after the file, and brings every entry's sampler values up to date with `recommended.toml` in this repository. An entry marked `manual = true` is left alone; an entry whose file is gone is taken out, whatever else it says. `--force` also keys every entry the way the library names its file |
+| `python -m cm.scan` | the one with the card | Adds an entry to the settings file for every model in the library that has none yet, named after the file, and brings every entry's sampler values up to date with `recommended.toml` in this repository. An entry marked `manual = true` or `special = true` is left alone; an entry whose file is gone is taken out, whatever else it says. `--force` also keys every entry the way the library names its file |
 | `python -m cm.models` | the one with the card | The models the settings file names: whether the file is in the library, which repository it came from, and the commit that repository is at now. Downloads nothing |
 | `python -m cm.calibrate` | the one with the card | Works out where each model in the settings file sits on this card, and writes `llamacpp.models.ini` — the preset the router reads. Loads nothing; it asks the estimator, which reads GGUF headers, so it takes seconds |
 | `python -m cm.router start` | the one with the card | Runs the server of the build the settings file records, on the preset `calibrate` wrote, and reports what it serves. `stop` ends the server that is holding the configured port |
@@ -303,9 +303,10 @@ new name afterwards, so the preset has to be written again:
 python -m cm.calibrate
 ```
 
-Files that only sit beside a model are left out: `mmproj-*.gguf` is a vision projector,
-unused here and about a gibibyte of video memory to pair, and `mtp-*.gguf` is a
-prediction head, which this reads out of the model's own file instead.
+Files that only sit beside a model are left out: `mmproj-*.gguf` is a multimodal
+projector, which is named by the entry of the model it belongs to rather than being a
+model of its own, and `mtp-*.gguf` is a prediction head, which this reads out of the
+model's own file instead.
 
 ### Where the sampler values come from
 
@@ -362,7 +363,7 @@ What happens to an entry when `scan` runs is decided by the entry:
 |---|---|
 | there is none for the file | one is added, with what the repository recommends |
 | there is one | its settings block is brought up to date |
-| there is one, marked `manual = true` | nothing at all |
+| there is one, marked `manual = true` or `special = true` | nothing at all |
 | there is one keyed some other way, and `--force` | it is keyed the way the library names its file |
 | there is one, and its settings are written some other way | nothing at all, and the run says which entry and why |
 
@@ -395,7 +396,9 @@ for these models and appear nowhere in the file to be disagreed with.
 
 Nothing about the card goes in an entry: what window the model gets, what its attention
 cache is held at and how much of it stays in system memory are measured by `calibrate`
-below, and writing one of them here is refused rather than obeyed.
+below, and writing one of them here is refused rather than obeyed. The one exception is
+an entry marked `special = true`, which is not measured at all and says all of it
+itself — see below.
 
 To take a model out of service, set it aside rather than deleting its entry:
 
@@ -409,6 +412,58 @@ the entry instead would leave the file unnamed, and the next `scan` would write 
 Both flags go **above** the settings block: TOML gives a bare key to the last header
 above it, so `hidden` written under `[models.'x'.settings]` is a sampler value that
 hides nothing. That is refused rather than ignored.
+
+### A model that says how it runs
+
+The estimator reads the header of the model's own file and nothing else. A model served
+with a multimodal projector beside it is one whose answer is short by whatever that
+projector takes, and a placement computed from a short answer is exactly what the rule
+above exists to prevent — it would not even look like a failure. So such a model is not
+placed at all. Its entry says how it runs, in full, and `calibrate` copies that into the
+preset untouched:
+
+```toml
+[models.'listener']
+file      = 'ggml-org\Qwen3-ASR-1.7B-GGUF\Qwen3-ASR-1.7B-Q8_0.gguf'
+projector = 'ggml-org\Qwen3-ASR-1.7B-GGUF\mmproj-Qwen3-ASR-1.7B-bf16.gguf'
+special   = true
+holds_mib = 3300
+
+[models.'listener'.settings]
+ctx-size     = 4096
+cache-type-k = 'f16'
+cache-type-v = 'f16'
+device       = 'CUDA0'
+split-mode   = 'none'
+fit          = 'on'
+fit-target   = 512
+```
+
+The settings block is the whole command line, so the keys refused everywhere else belong
+in it. `fit = 'on'` hands the fitting to llama.cpp, which does it on loading — where the
+projector is in front of it, and where its own worst-case figure is added to what the
+card has to leave free. Nothing here decides beforehand where the model goes.
+
+`projector` is written relative to the library like `file`, and is written into the
+section as `mmproj` together with `no-mmproj = false`: the shared block turns projectors
+off for every model that does not ask for one, and the router reads what a model accepts
+by that key rather than by the file. A projector that is not where the entry says is
+reported and the model is left out, rather than failing at the moment somebody asks for
+it.
+
+`holds_mib` is what the profile holds on the card once it is loaded. It is required,
+because nothing here measures it and `vram` reads it to say whether the model fits and
+what would have to be closed for it to. It is the one figure in the preset no run of
+`calibrate` will ever correct, so check it against a real load.
+
+One profile, and its name is the entry's key with nothing added — there is nothing to
+choose between, so there is no window in the name to move. A client pinning that name
+keeps it across every recalibration.
+
+A model that takes audio is served like any other and left out of `pi`'s model list: its
+input is a recording and its reply is a transcript, so there is no conversation for a
+coding agent to hold with it. A model that reads pictures is not affected — it reads a
+conversation too.
 
 Then:
 
@@ -767,6 +822,11 @@ and how they run: `device`, `split-mode`, `tensor-split`, `ubatch-size`, `rpc` a
 refused rather than obeyed — a placement quietly overridden is the failure this program
 exists to prevent, and it would not even look like one: the router would start, serve the
 model, and hold a different window than the card was measured for.
+
+Unless the entry is marked `special = true`, which is for a model nothing here can
+measure: then it says all of the above itself, names its `projector` and `holds_mib`, and
+is copied into the preset as it stands — see
+[A model that says how it runs](#a-model-that-says-how-it-runs).
 
 The settings file is yours and is not in the repository. The template is.
 

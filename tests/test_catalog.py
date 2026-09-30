@@ -12,13 +12,13 @@ from pathlib import Path
 
 from cm import place
 from cm.catalog import Loadable, parse
-from cm.config import (DEFAULT_CUDA, DEFAULT_KEPT, DEFAULT_RUNTIME, Config,
-                       ConfigError, Model)
+from cm.config import (DEFAULT_CUDA, DEFAULT_KEPT, DEFAULT_RUNTIME, Config, ConfigError,
+                       Model, Projector, Stated, Worked)
 from cm.machine import (Card, Core, Fitted, Machine, system_memory)
 from cm.name import names
 from cm.nonempty import NonEmpty
 from cm.place import CacheType, ExpertsOnCpu, Settings, WholeCard
-from cm.render import Placed, preset
+from cm.render import Given, Placed, preset
 from cm.serving import (DEFAULT_HOST, DEFAULT_IDLE, DEFAULT_PORT,
                         DEFAULT_RESIDENT, Serving)
 from cm.units import Layers, Mib, Tokens
@@ -98,10 +98,18 @@ def settings(ctx, cache=CacheType.Q8_0, head=False, placement=None,
                     layout=LAYOUT)
 
 
+def model(key) -> Model:
+    return Model(key=key, path=MODELS / f"{key}.gguf",
+                 vendor={}, runs=Worked(place.EVERYTHING), manual=False)
+
+
 def placed(key, *chosen) -> Placed:
-    model = Model(key=key, path=MODELS / f"{key}.gguf",
-                  vendor={}, allowed=place.EVERYTHING, manual=False)
-    return Placed(model, names(key, chosen, shown(chosen)), Mib(0))
+    return Placed(model(key), names(key, chosen, shown(chosen)), Mib(0))
+
+
+def given(key, holds) -> Given:
+    return Given(model(key), Stated(holds=Mib(holds),
+                                    beside=Projector(MODELS / "mmproj.gguf")))
 
 
 class WhatCalibrateWritesIsWhatVramReads(unittest.TestCase):
@@ -198,6 +206,28 @@ class TheRestOfTheFileIsNoneOfThisModulesBusiness(unittest.TestCase):
 
         self.assertEqual(["gemma4-12b", "qwen3.8-45k-q8"],
                          [one.name for one in parse(doubled, CARD)])
+
+
+class AModelThatStatesWhatItHoldsIsReadBackTheSameWay(unittest.TestCase):
+    """Nothing measured it, and `vram` still has to be able to weigh it against the card.
+
+    A figure written by hand and a figure computed against the card are read by the same
+    parser, so this is the test that would catch a stated section going unreadable.
+    """
+
+    def test_the_stated_figure_comes_back(self):
+        written = preset(config(), MACHINE, MEMORY, (given("listener", 3300),))
+
+        self.assertEqual((Loadable("listener", Mib(3300)),), parse(written, CARD))
+
+    def test_it_stands_beside_the_profiles_calibrate_placed(self):
+        written = preset(config(), MACHINE, MEMORY,
+                         (given("listener", 3300),
+                          placed("gemma4-12b", settings(262000, spare=6018))))
+
+        self.assertEqual((Loadable("gemma4-12b-262k", Mib(16303 - 6018)),
+                          Loadable("listener", Mib(3300))),
+                         parse(written, CARD))
 
 
 if __name__ == "__main__":

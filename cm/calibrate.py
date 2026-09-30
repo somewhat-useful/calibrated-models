@@ -13,14 +13,15 @@ from pathlib import Path
 
 from . import (devices, files, invoke, place, proc, reach, reading, releases, render,
                report, weights, workspace)
-from .config import Config, ConfigError, Model, NoSlave
+from .config import (Config, ConfigError, Model, NoProjector, NoSlave, Projector, Stated,
+                     Worked)
 from .estimate import Requirement, parse_requirement
 from .facts import parse_facts
 from .machine import Machine, UnreadableDevice, off_card, system_memory
 from .name import names
 from .place import Limits, Local, Question, Remote, Reserves, Settings, Worker
 from .releases import Running
-from .render import Placed
+from .render import Given, Offered, Placed
 from .units import Mib
 
 # What the estimator is called. It reads the header of a GGUF and works out what a
@@ -73,32 +74,55 @@ def _calibrate(settings: Path) -> None:
 
     room = off_card(read.cache_ram, machine)
 
-    placed = []
+    offered: list[Offered] = []
     for model in read.models:
         if not files.exists(model.path):
             print(report.missing(model.key, model.path))
             continue
 
-        one = _place(estimator, read, model, limits)
-        if one.resident > room:
-            print(report.too_much(model.key, one.resident, room))
-            continue
+        match model.runs:
+            case Stated() as stated:
+                if not _beside(stated, model):
+                    continue
+                one = Given(model, stated)
+            case Worked() as worked:
+                one = _place(estimator, read, model, worked, limits)
+                if one.resident > room:
+                    print(report.too_much(model.key, one.resident, room))
+                    continue
 
-        placed.append(one)
+        offered.append(one)
         print("\n".join(report.about(one)))
 
-    if not placed:
+    if not offered:
         raise ConfigError(_nothing_is_there(settings, read))
 
     memory = system_memory(read.cache_ram, machine,
-                           Mib(max((one.resident for one in placed), default=0)))
+                           Mib(max((one.resident for one in offered
+                                    if isinstance(one, Placed)), default=0)))
 
     preset = settings.parent / read.preset_path
-    files.write(preset, render.preset(read, machine, memory, placed))
+    files.write(preset, render.preset(read, machine, memory, offered))
 
     print()
     print(report.system(memory))
-    print(report.closing(preset, placed))
+    print(report.closing(preset, offered))
+
+
+def _beside(stated: Stated, model: Model) -> bool:
+    """Whether the projector the entry names is where it says.
+
+    Checked here rather than left to the load: a projector that is not there fails the
+    model at the moment somebody asks for it, and this is the run that could have said so.
+    """
+    match stated.beside:
+        case NoProjector():
+            return True
+        case Projector(path) if files.exists(path):
+            return True
+        case Projector(path):
+            print(report.no_projector(model.key, path))
+            return False
 
 
 def _names_nothing(settings: Path, read: Config) -> str:
@@ -171,18 +195,20 @@ def _estimator(engines: Path, running: Running) -> Path:
     raise ConfigError(releases.unfound(engines, ESTIMATOR, running))
 
 
-def _place(estimator: Path, read: Config, model: Model, limits: Limits) -> Placed:
+def _place(estimator: Path, read: Config, model: Model, worked: Worked,
+           limits: Limits) -> Placed:
     """One model, asked about until the core stops asking."""
     facts = parse_facts(proc.run(invoke.facts_argv(estimator, model.path)).err)
+    allowed = worked.allowed
 
     answers = {}
-    while asking := place.next_questions(facts, model.allowed, limits, answers):
+    while asking := place.next_questions(facts, allowed, limits, answers):
         for question in asking:
             argv = invoke.argv(estimator, model.path, question, read.runtime)
             answers[question] = parse_requirement(proc.run(argv).out)
 
-    chosen = place.settings(facts, model.allowed, limits, answers)
-    return Placed(model, names(model.key, chosen, place.variants(facts, model.allowed)),
+    chosen = place.settings(facts, allowed, limits, answers)
+    return Placed(model, names(model.key, chosen, place.variants(facts, allowed)),
                   _resident(read, model, chosen, answers))
 
 

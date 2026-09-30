@@ -58,4 +58,4 @@ def rows() -> tuple[Row, ...]:
         raise RecommendedError(
             f"{workspace.RECOMMENDED} is not in this copy of the repository: {where}")
 
-    return recommended.parse(files.read(where), config.DERIVED | config.FLAGS)
+    return recommended.parse(files.read(where), config.DERIVED | config.ENTRY)

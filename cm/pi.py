@@ -80,7 +80,17 @@ def _point(router: Router, config: Path, provider: str, backups: int,
            preview: bool) -> None:
     print(f"Asking the router at {router.base_url} what it serves ...")
 
-    models = _serving(router)
+    served = _serving(router)
+    models = agent.chatting(served)
+    for one in served:
+        if not agent.chats(one):
+            print(f"  ! {one.id} left out: it takes {agent.AUDIO}, so it is not a model "
+                  "to hold a conversation with")
+
+    if not models:
+        raise Refusal(f"Every one of the {len(served)} models the router serves takes "
+                      f"{agent.AUDIO}, so there is none for pi to be pointed at.")
+
     offered = _offered(reading.rows(), models)
     for one in offered:
         served = one.served
@@ -111,7 +121,7 @@ def _point(router: Router, config: Path, provider: str, backups: int,
 
 
 def _offered(rows: Sequence[Row], models: Sequence[Served]) -> tuple[Offering, ...]:
-    """Every model the router serves, with what a client may ask it to think at.
+    """Each of these models with what a client may ask it to think at.
 
     A repository saying two different things about one model is not this command's to
     correct -- it points a client at a router -- so it says which rows disagree and leaves
@@ -146,9 +156,13 @@ def _asked(thinking: Told) -> str:
 def _compaction(settings: Path, models: Sequence[Served]) -> agent.Written:
     """pi's own two numbers, put behind the ones the extension will compute.
 
-    The smallest pair across the models served is what pi has to fit behind, and it is
-    printed: it is the number to compare with what /context-policy reports under the
-    model with the shortest window.
+    The smallest pair across the models pi is being offered is what it has to fit behind,
+    and it is printed: it is the number to compare with what /context-policy reports
+    under the model with the shortest window.
+
+    The models pi is offered, not every model the router serves. A recogniser holds a
+    window as short as its longest recording and pi will never send it a turn, so letting
+    it set these numbers would compact every conversation down to a window nothing uses.
     """
     document = _document(settings) if files.exists(settings) else {}
 
